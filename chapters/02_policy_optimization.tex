@@ -1,11 +1,188 @@
-\chapter{Policy Optimization: REINFORCE to PPO}
-\section{Why Do We Need It?}
-\TODO{Add a simple explanation and example.}
-\section{Models and Inputs/Outputs}
-\TODO{Describe networks and action selection.}
-\section{Data, Targets, Losses, and Gradients}
-\TODO{Add equations and training pseudocode.}
-\section{Links to Other Methods}
-\TODO{Compare with earlier algorithms.}
+\chapter{Policy Optimization: From REINFORCE to PPO}
+\section{Learning Goals and Algorithm Roadmap}
+This chapter explains the progression
+\begin{center}
+REINFORCE $\rightarrow$ Reward-to-Go $\rightarrow$ Baselines
+$\rightarrow$ Actor-Critic $\rightarrow$ GAE $\rightarrow$ PPO.
+\end{center}
+Each step addresses a specific problem: noisy gradients, credit assignment, value estimation, or overly large updates from reused rollout data. These are related ideas, not necessarily one historical chain of mandatory components.
+
+\section{Why Learn a Policy Directly?}
+A value-based discrete-action agent can select $\arg\max_a Q(s,a)$. This is difficult when actions are continuous and a global action maximization must be solved at each step. A policy $\pi_\theta(a\mid s)$ instead outputs an action distribution directly; a deterministic policy $\mu_\theta(s)$ outputs an action. Stochastic policies naturally support exploration.
+
+\section{The Trajectory Probability and Log-Derivative Trick}
+For a finite-horizon MDP with dynamics independent of $\theta$,
+\begin{equation}
+p_\theta(\tau)=\rho_0(s_0)\prod_{t=0}^{T-1}
+\pi_\theta(a_t\mid s_t)P(s_{t+1}\mid s_t,a_t).
+\end{equation}
+For a sampled trajectory $\tau$ define $R(\tau)=\sum_{t=0}^{T-1}r_t$ in the undiscounted case.
+\begin{align}
+J(\theta)&=\E_{\tau\sim p_\theta}[R(\tau)],\\
+\nabla_\theta p_\theta(\tau)&=
+p_\theta(\tau)\nabla_\theta\log p_\theta(\tau),\\
+\nabla_\theta\log p_\theta(\tau)&=
+\sum_{t=0}^{T-1}\nabla_\theta\log\pi_\theta(a_t\mid s_t),\\
+\nabla_\theta J(\theta)&=
+\E_\tau\left[R(\tau)\sum_t\nabla_\theta\log\pi_\theta(a_t\mid s_t)\right].
+\end{align}
+The initial-state and environment transition terms disappear from the log-probability gradient because they do not directly depend on $\theta$ for a fixed sampled trajectory. The environment still affects which trajectories and rewards are observed; its mathematical derivatives are not required.
+
+\section{REINFORCE and Monte Carlo Estimation}
+Sample $N$ trajectories under the current policy. A Monte Carlo policy-gradient estimator is
+\begin{equation}
+\hat g=\frac1N\sum_{i=1}^{N}R(\tau^{(i)})
+\sum_{t=0}^{T-1}\nabla_\theta
+\log\pi_\theta(a_t^{(i)}\mid s_t^{(i)}).
+\end{equation}
+With gradient descent, use the negative of the sample log-probabilities weighted by sampled returns. Returns are treated as constants in the actor computation graph. REINFORCE is on-policy and model-free; a critic is not required. The estimator can have high variance.
+
+\section{Reward-to-Go and Causality}
+The total return includes rewards before action $a_t$, which that action cannot influence. The policy score satisfies
+\begin{equation}
+\E_{a_t\sim\pi_\theta(\cdot\mid s_t)}
+[\nabla_\theta\log\pi_\theta(a_t\mid s_t)]=0.
+\end{equation}
+Conditioning on the history before $a_t$ shows that adding past rewards to the weight has zero expected gradient contribution. We can use future rewards only:
+\begin{equation}
+G_t=\sum_{k=t}^{T-1}\gamma^{k-t}r_k.
+\end{equation}
+For the undiscounted objective, a reward-to-go estimator is $\sum_t\nabla\log\pi_\theta(a_t\mid s_t)G_t$. For the standard discounted objective $J=\E[\sum_t\gamma^tr_t]$, the corresponding expression has an additional $\gamma^t$ outside this product; algorithms may use other objective conventions.
+Example: rewards $(1,2,10)$ with $\gamma=1$ yield full-return weights $(13,13,13)$ versus reward-to-go weights $(13,12,10)$. With rewards $(5,-2,8)$ and $\gamma=0.9$, reward-to-go values are $(9.68,5.2,8)$.
+\begin{intuition}
+An action should not receive gradient noise from rewards that occurred before the action.
+\end{intuition}
+
+\section{Baselines and the Advantage}
+For any action-independent state baseline $b(s_t)$, conditioning on $s_t$ gives
+\begin{align}
+\E_{a_t\sim\pi_\theta}[
+\nabla_\theta\log\pi_\theta(a_t\mid s_t)b(s_t)]
+&=b(s_t)\nabla_\theta\sum_a\pi_\theta(a\mid s_t)=0.
+\end{align}
+Therefore replacing $G_t$ by $G_t-b(s_t)$ preserves the expected policy-gradient contribution, under the usual sampling and differentiability assumptions. A poor baseline need not reduce variance. A natural choice is $b(s)=V^\pi(s)$:
+\begin{equation}
+A^\pi(s,a)=Q^\pi(s,a)-V^\pi(s),\qquad
+\hat A_t^{MC}=G_t-V_\phi(s_t).
+\end{equation}
+For example, at a state with $Q(L)=100$, $Q(R)=110$, and an equal-probability policy, $V(s)=105$ and advantages are $-5,+5$. The advantage measures relative action quality; the sampled return $G_t$ is still noisy.
+
+\section{Actor-Critic Architecture and One-Step TD Advantage}
+An independent actor $\pi_\theta(a\mid s)$ outputs action probabilities. A state-value critic $V_\phi(s)$ outputs a scalar. For nonterminal transitions:
+\begin{align}
+y_t^{TD}&=r_t+\gamma V_\phi(s_{t+1}),\\
+\delta_t&=y_t^{TD}-V_\phi(s_t),\\
+L_V(\phi)&=\E[(V_\phi(s_t)-\operatorname{stopgrad}(y_t^{TD}))^2],\\
+L_{\mathrm{actor}}(\theta)&=-\E[
+\log\pi_\theta(a_t\mid s_t)\operatorname{stopgrad}(\delta_t)].
+\end{align}
+With an exact $V^\pi$,
+$\E[\delta_t\mid s_t,a_t]=A^\pi(s_t,a_t)$.
+With an approximate critic this may be biased. Example: $r=2$, $\gamma=0.9$, $V(s)=4$, $V(s')=6$; $y^{TD}=7.4$, $\delta=3.4$. The critic moves toward $7.4$; the actor tends to increase the sampled action probability because the advantage estimate is positive. Genuine terminal transitions have zero next-state bootstrap contribution.
+
+\section{Multi-Step Returns and Generalized Advantage Estimation}
+A one-step advantage relies strongly on the critic's next-state prediction; a full Monte Carlo advantage can have high variance. For an episode with at least $n$ remaining steps,
+\begin{align}
+\hat Q_t^{(n)}&=\sum_{k=0}^{n-1}\gamma^kr_{t+k}
++\gamma^n V_{\mathrm{old}}(s_{t+n}),\\
+\hat A_t^{(n)}&=\hat Q_t^{(n)}-V_{\mathrm{old}}(s_t)
+=\sum_{l=0}^{n-1}\gamma^l\delta_{t+l}.
+\end{align}
+GAE combines TD residuals:
+\begin{equation}
+\hat A_t^{GAE(\gamma,\lambda)}
+=\sum_{l=0}^{T-t-1}(\gamma\lambda)^l\delta_{t+l}.
+\end{equation}
+Use proper terminal masking and bootstrap at an unfinished rollout boundary. When $\lambda=0$, GAE is one-step TD advantage. When $\lambda=1$ and the episode truly ends, it equals $G_t-V_{\mathrm{old}}(s_t)$. Increasing $\lambda$ usually lowers bootstrap bias but raises variance.
+For $(\delta_0,\delta_1,\delta_2)=(2,4,-1)$, $\gamma=0.9$, $\lambda=0.5$:
+\begin{equation}
+\hat A_0=2+0.45(4)+0.45^2(-1)=3.5975.
+\end{equation}
+
+\section{GAE and TD($\lambda$)}
+The forward-view TD($\lambda$) target is the lambda-return $G_t^\lambda$. When computed using the same fixed rollout value estimates,
+\begin{equation}
+G_t^\lambda=V_{\mathrm{old}}(s_t)+\hat A_t^{GAE}.
+\end{equation}
+A finite-episode mixture of $n$-step returns, with $N$ steps remaining, is
+\begin{equation}
+G_t^\lambda=(1-\lambda)\sum_{n=1}^{N-1}\lambda^{n-1}G_t^{(n)}
++\lambda^{N-1}G_t^{(N)}.
+\end{equation}
+The forward-view lambda-return is a \emph{critic target}; GAE is an \emph{actor advantage estimate}. Classical backward-view TD($\lambda$) additionally involves eligibility traces.
+For the previous example, if $V_{\mathrm{old}}(s_0)=5$, then $G_0^\lambda=8.5975$.
+
+\section{On-Policy Data Reuse and Importance Ratios}
+PPO gathers a batch with behavior policy $\pi_{\theta_{\mathrm{old}}}$ and saves the sampled actions and their old log-probabilities. During optimization, the current policy $\pi_\theta$ changes, but the stored actions do not.
+The importance ratio for each sampled action is
+\begin{equation}
+\rho_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}
+{\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)}
+=\exp(\log\pi_\theta(a_t\mid s_t)
+-\log\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)).
+\end{equation}
+The importance sampling identity changes expectations between two action distributions, provided their support condition holds. The PPO surrogate $\E[\rho_t\hat A_t]$ uses the \emph{old state distribution}, so it is not an exact arbitrary-distance correction of full new-policy trajectory returns.
+\begin{pitfall}
+At the next PPO minibatch update, recompute the \emph{new log-probability of the stored action}. Do not sample a replacement action from the current policy. Keep old log-probabilities, advantages, and returns fixed for this rollout.
+\end{pitfall}
+
+\section{PPO Clipped Objective}
+PPO maximizes
+\begin{equation}
+L^{CLIP}(\theta)=\E_t\left[
+\min\left(
+\rho_t\hat A_t,\;
+\operatorname{clip}(\rho_t,1-\epsilon,1+\epsilon)\hat A_t
+\right)\right].
+\end{equation}
+The minimum clips \emph{excessive improvement}, not every ratio beyond the interval:
+\begin{itemize}
+\item If $\hat A_t>0$, the upper side $\rho_t>1+\epsilon$ is capped.
+\item If $\hat A_t<0$, the lower side $\rho_t<1-\epsilon$ is capped.
+\item If a good action becomes much less probable, or a bad action much more probable, the objective retains a corrective gradient (from the un-clipped term).
+\end{itemize}
+For $\epsilon=0.2$, $\rho=1.5$, $\hat A=-4$: the terms are $-6$ and $-4.8$. The PPO objective is $\min(-6,-4.8)=-6$, not $-4$ or $-4.8$.
+A naive objective $\operatorname{clip}(\rho,1-\epsilon,1+\epsilon)\hat A$ incorrectly removes corrective gradients on both sides.
+Clipping is a practical conservative surrogate, \emph{not} a hard guarantee that all ratios or policy KL values are bounded.
+
+\section{PPO Complete Data and Gradient Flow}
+\begin{enumerate}
+\item Collect a rollout with $\pi_{\theta_{\mathrm{old}}}$. Save states, sampled actions, rewards, next-state information, old action log-probabilities, and rollout-time value predictions.
+\item With old values, compute TD residuals, GAE advantages, and $\hat R_t=\hat A_t+V_{\mathrm{old}}(s_t)$. Freeze these batch targets.
+\item Repeat several minibatch epochs. Feed \emph{stored} states and actions into the \emph{current} actor and recompute $\log\pi_\theta(a_t\mid s_t)$.
+\item Compute ratios and clipped policy objective, then update actor parameters $\theta$.
+\item Predict $V_\phi(s_t)$ using the current critic, regress toward fixed $\hat R_t$, and update critic parameters $\phi$.
+\item After optimization, collect a new rollout under the updated policy, reset the reference old policy, and recompute targets.
+\end{enumerate}
+For independent actor and critic networks, detached advantages make actor-loss gradient flow only to $\theta$, and the value loss updates $\phi$. If actor and critic share a backbone, both losses may update shared features.
+\subsection{Minimal Code Data Flow}
+\begin{verbatim}
+# after rollout: all tensors [B], except states [B, obs_dim]
+with torch.no_grad():
+    advantages = compute_gae(rewards, old_values, boundaries)
+    returns = advantages + old_values
+    old_log_probs = saved_behavior_log_probs
+for epoch in range(n_epochs):
+    for batch in minibatches:
+        new_log_probs = actor(states).log_prob(stored_actions)
+        ratio = exp(new_log_probs - old_log_probs)
+        actor_loss = -min(ratio * advantages,
+            clamp(ratio, 1-eps, 1+eps) * advantages).mean()
+        value_loss = mse(critic(states), returns)
+        # Step independent actor and critic optimizers.
+\end{verbatim}
+This is schematic: indices, shapes, rollout boundary bootstrap, optional entropy term, and optional KL monitoring must be handled in a working implementation.
 \section{Review Questions}
-\TODO{Add our questions after the study session.}
+\begin{enumerate}
+\item Why can trajectory policy gradients ignore the derivatives of environment dynamics?
+\item Why can reward-to-go remove earlier rewards without changing the expected gradient?
+\item Why does a state baseline preserve the expected policy gradient?
+\item When is TD residual an unbiased conditional estimator of advantage?
+\item How does GAE interpolate between one-step TD and Monte Carlo?
+\item Why is $\hat R_t$ kept fixed over the minibatch optimization epochs?
+\item For $\rho=1.5$ and $\hat A=-4$ with $\epsilon=0.2$, what does the PPO minimum choose?
+\item Why must the next optimization epoch reuse the old sampled action?
+\end{enumerate}
+\section{Learning Status and Source Notes}
+First study pass completed. Revisit the distinction between \emph{stored action} and \emph{new action probability}, and the negative-advantage side of PPO clipping.
+Course basis: supplied CS 8803 Fall 2026 Lecture 2 (Policy Gradients) and Lecture 3 (Actor-Critic Algorithms): likelihood-ratio gradients, reward-to-go, baselines, on/off-policy importance sampling, critics, multi-step returns, and GAE. Detailed PPO clipped-objective walkthrough and implementation are supplementary study explanation; the above is not a verbatim slide transcription.
