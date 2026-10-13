@@ -1,4 +1,4 @@
-# Deep RL Survey — English Version (v0.3)
+# Deep RL Survey — English Version (v0.4)
 
 Plain English with mathematical LaTeX. Based on CS 8803 Fall 2026 course materials and our guided study.
 
@@ -8,7 +8,7 @@ Upload the complete project ZIP as a new project and preserve the `chapters/` fo
 ## Progress
 - [x] Chapter 0 — Overview (initial draft)
 - [x] Chapter 1 — Fundamentals (first pass completed; expanded with numerical examples)
-- [ ] Chapter 2 — Policy Gradients and Actor-Critic in depth
+- [x] Chapter 2 — Policy Gradients, REINFORCE, reward-to-go, baselines, actor-critic, GAE, PPO clipping (first pass)
 - [ ] Chapter 3 — Value-Based RL
 - [ ] Chapter 4 — Continuous Control
 - [ ] Chapter 5 — Model-Based RL
