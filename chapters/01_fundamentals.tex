@@ -1,54 +1,107 @@
 \chapter{RL Fundamentals}
-\section{Markov Decision Processes}
-An MDP has states, actions, transition probabilities, rewards, a discount factor, and an initial distribution: $\mathcal M=(\States,\Actions,P,r,\gamma,\rho_0)$.
-\begin{align}s_0&\sim\rho_0,&a_t&\sim\pi(\cdot\mid s_t),\\s_{t+1}&\sim P(\cdot\mid s_t,a_t).\end{align}
-\section{Return, Value, Q, and Advantage}
+\section{MDP and the Goal of RL}
+An agent sees state $s_t$, takes action $a_t$, receives reward $r_t$, and observes $s_{t+1}$. An MDP is $\mathcal{M}=(\States,\Actions,P,r,\gamma,\rho_0)$. The policy $\pi(a\mid s)$ specifies the action distribution. We aim to maximize the expected discounted return, where
+\begin{equation}G_t=\sum_{k=0}^{T-t-1}\gamma^k r_{t+k}.\end{equation}
+\section{Policy, Value, Q and Advantage}
 \begin{align}
-G_t&=\sum_{k=0}^{T-t-1}\gamma^k r_{t+k},\\
 V^\pi(s)&=\E_\pi[G_t\mid s_t=s],\\
 Q^\pi(s,a)&=\E_\pi[G_t\mid s_t=s,a_t=a],\\
 A^\pi(s,a)&=Q^\pi(s,a)-V^\pi(s).
 \end{align}
 \begin{intuition}
-$V(s)$: How good is this state if we follow the policy?\\
-$Q(s,a)$: How good is taking this action first?\\
-$A(s,a)$: Is the action better than average here?
+Policy: What action should I take?\\
+Value: How good is this state if I follow $\pi$?\\
+Q: How good is taking $a$ first and then following $\pi$?\\
+Advantage: Is this action better than the policy's average action?
 \end{intuition}
+For discrete actions,
+\begin{equation}V^\pi(s)=\sum_a\pi(a\mid s)Q^\pi(s,a).\end{equation}
+Example: $Q^\pi(s,L)=4$, $Q^\pi(s,R)=10$, $\pi(L\mid s)=0.75$, $\pi(R\mid s)=0.25$. Thus $V^\pi(s)=0.75(4)+0.25(10)=5.5$, not $7$ or $10$.
+\section{Policy Evaluation and Policy Improvement}
+Policy evaluation estimates $V^\pi$ or $Q^\pi$ for a given policy. Policy improvement chooses better actions based on the estimates. For discrete actions, a greedy improvement is
+\begin{equation}\pi_{\mathrm{new}}(s)\in\arg\max_a Q^{\pi_{\mathrm{old}}}(s,a).\end{equation}
+Under the standard policy improvement assumptions, doing this at every state does not decrease value. The old $Q$ still evaluates future actions under the old policy; it is not automatically the new policy's true value. DQN does not need a separate actor because it can choose actions using $\arg\max_a Q(s,a)$.
 \section{Bellman Equations}
-For a fixed policy,
+The return obeys $G_t=r_t+\gamma G_{t+1}$, which gives Bellman expectation equations:
 \begin{align}
 V^\pi(s)&=\E_{a\sim\pi,s'\sim P}[r(s,a)+\gamma V^\pi(s')],\\
-Q^\pi(s,a)&=\E_{s'\sim P}\left[r(s,a)+\gamma\E_{a'\sim\pi}Q^\pi(s',a')\right].
+Q^\pi(s,a)&=\E_{s'\sim P}[r(s,a)+\gamma\E_{a'\sim\pi}Q^\pi(s',a')].
 \end{align}
-For optimal control,
-\begin{equation}Q^*(s,a)=\E_{s'\sim P}\left[r(s,a)+\gamma\max_{a'}Q^*(s',a')\right].\end{equation}
-The first equations evaluate a given policy. The last one looks for optimal actions.
-\section{Monte Carlo and TD Learning}
+The Bellman optimality equation is
+\begin{equation}Q^*(s,a)=\E_{s'\sim P}[r(s,a)+\gamma\max_{a'}Q^*(s',a')].\end{equation}
+A policy expectation evaluates a fixed policy; a maximum is used for optimal value learning.
+\section{Monte Carlo and TD Targets}
+Monte Carlo uses the sampled return $y_t^{MC}=G_t$. One-step TD uses bootstrapping:
 \begin{align}
-y_t^{\mathrm{MC}}&=G_t,\\
-y_t^{\mathrm{TD}}&=r_t+\gamma(1-d_t)V_{\bar\phi}(s_{t+1}),\\
-\delta_t&=y_t^{\mathrm{TD}}-V_\phi(s_t).
+y_t^{TD}&=r_t+\gamma(1-d_t)V_{\bar\phi}(s_{t+1}),\\
+\delta_t&=y_t^{TD}-V_\phi(s_t),\\
+L_V(\phi)&=\E[(V_\phi(s_t)-\operatorname{stopgrad}(y_t^{TD}))^2].
 \end{align}
-Here $d_t=1$ marks a truly terminal transition; time limits need care.
-\begin{equation}\mathcal L_V(\phi)=\E[(V_\phi(s_t)-\operatorname{stopgrad}(y_t^{\mathrm{TD}}))^2].\end{equation}
+Here $d_t$ denotes true termination; time-limit truncation needs special treatment. TD targets are estimates, not exact labels. Stop-gradient prevents the target branch from receiving a gradient during the current update.
+Example: $r=2$, $\gamma=0.9$, $V(s')=5$, $V(s)=4$. Then $y^{TD}=6.5$ and $\delta=2.5$, pushing the current prediction upward.
+\section{DQN: Q-Learning and Target Networks}
+DQN uses
+\begin{align}
+y_t^Q&=r_t+\gamma(1-d_t)\max_{a'}Q_{\bar\phi}(s_{t+1},a'),\\
+L_Q(\phi)&=\E[(Q_\phi(s_t,a_t)-\operatorname{stopgrad}(y_t^Q))^2].
+\end{align}
+Example: $r=3$, $\gamma=0.9$, online $Q(s,a)=6$, target-network $Q(s',\cdot)=[4,7,5]$. Then $y^Q=9.3$, so the online prediction should rise.
+The online Q-network receives gradient updates. The target Q-network provides more stable targets and is updated by copying online parameters periodically or with
+$\bar\phi\leftarrow\tau\phi+(1-\tau)\bar\phi$.
+A replay buffer stores $(s,a,r,s',d)$ and allows sampling minibatches of past data.
 \begin{pitfall}
-A TD target is an estimate, not exact ground truth. We usually stop gradients through it.
+Stop-gradient freezes the target within one update. A separate target network slows target changes across updates. They are not the same mechanism.
 \end{pitfall}
-\section{Numerical Example}
-If $r=2$, $\gamma=0.9$, $V(s')=5$, and $V(s)=8$, then $y^{\mathrm{TD}}=6.5$ and $\delta=-1.5$. The value prediction should move toward 6.5.
-\section{Policy Gradient}
-A common form is
+\section{GAE: From TD Residuals to Advantages}
+PPO commonly computes, using value estimates from the rollout collection stage,
+\begin{align}
+\delta_t&=r_t+\gamma(1-d_t)V_{\mathrm{old}}(s_{t+1})-V_{\mathrm{old}}(s_t),\\
+\hat A_t&=\delta_t+\gamma\lambda(1-d_t)\hat A_{t+1},\\
+\hat R_t&=\hat A_t+V_{\mathrm{old}}(s_t).
+\end{align}
+Compute the recursion backward, with correct termination and rollout-boundary bootstrapping. Higher $\lambda$ generally uses longer-horizon evidence, often reducing bootstrap bias while raising variance.
+For a three-step episode with rewards $(2,3,5)$, value predictions $(4,5,6,0)$ (last state terminal), $\gamma=0.9$, and $\lambda=0.8$:
+\begin{align}
+(\delta_0,\delta_1,\delta_2)&=(2.5,3.4,-1),\\
+(\hat A_0,\hat A_1,\hat A_2)&=(4.4296,2.68,-1),\\
+(\hat R_0,\hat R_1,\hat R_2)&=(8.4296,7.68,5).
+\end{align}
+These $\hat R_t$ are estimated value targets, not exact ground truth.
+\section{PPO: Actor and Critic Training}
+PPO first collects a rollout with $\pi_{\theta_{\mathrm{old}}}$ and saves the old action log probabilities. Then it computes GAE and returns. During several minibatch epochs on the same rollout, it normally \emph{keeps} old log probabilities, $\hat A_t$, and $\hat R_t$ fixed. It recomputes them after the next rollout.
+The policy probability ratio is
+\begin{equation}\rho_t(\theta)=\frac{\pi_\theta(a_t\mid s_t)}{\pi_{\theta_{\mathrm{old}}}(a_t\mid s_t)}.\end{equation}
+The actor maximizes the clipped surrogate:
 \begin{equation}
-\nabla_\theta J(\theta)=\E_\pi\left[\sum_t\nabla_\theta\log\pi_\theta(a_t\mid s_t)A^\pi(s_t,a_t)\right].
+L^{CLIP}(\theta)=\E_t[\min(\rho_t\hat A_t,\operatorname{clip}(\rho_t,1-\epsilon,1+\epsilon)\hat A_t)].
 \end{equation}
-Precise weighting depends on the objective convention. A positive advantage encourages an action.
-\section{GAE}
-GAE combines several TD residuals:
-\begin{equation}\hat A_t^{\mathrm{GAE}(\gamma,\lambda)}=\sum_{l=0}^{T-t-1}(\gamma\lambda)^l\delta_{t+l}.\end{equation}
-Handle episode boundaries correctly. A larger $\lambda$ often reduces bootstrap bias while increasing variance. PPO often computes advantages once per rollout and holds them fixed during several optimization passes.
-\section{Questions}
+The critic minimizes
+\begin{equation}L_V(\phi)=\E_t[(V_\phi(s_t)-\hat R_t)^2].\end{equation}
+If the critic's prediction for $s_0$ changes from $4$ to $7$ during this optimization, the saved target is still $8.4296$, not $11.4296$.
+\section{Who Gets the Gradient?}
+If the actor $\pi_\theta$ and critic $V_\phi$ are independent networks, the actor loss depends on $\theta$, not $\phi$, because the already computed advantages are detached. Hence \texttt{actor\_loss.backward()} plus \texttt{actor\_optimizer.step()} only updates the actor. The critic loss and critic optimizer update $\phi$.
+If both networks share a feature backbone, actor and critic losses can both update shared parameters. The actual gradient flow depends on the computation graph and the optimizer's parameter groups.
+\begin{pitfall}
+A critic may have computed an advantage earlier. That does not mean the actor loss later backpropagates through that critic.
+\end{pitfall}
+\section{PPO vs. DQN}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}\toprule
+& PPO (typical) & DQN\\\midrule
+Data & Recent on-policy rollout & Replay buffer, off-policy\\
+Value model & $V^\pi(s)$ & Optimal-action Q approximation\\
+Target & Fixed rollout return estimate & Bootstrap max with target Q\\
+Policy improvement & Explicit clipped policy update & $\arg\max_a Q(s,a)$\\
+\bottomrule\end{tabularx}
+\end{center}
+PPO often precomputes fixed rollout value targets. DQN benefits from a slower target Q-network because its bootstrapped optimality targets change while training.
+\section{Review Questions and Next Steps}
 \begin{enumerate}
-\item Why does $Q(s,a)$ require an action input?
-\item Why is a TD target not exact ground truth?
-\item Why is GAE not a separate policy network?
+\item Why is $V^\pi(s)$ a policy-weighted mean of $Q^\pi(s,a)$?
+\item Why is a TD target an estimate rather than exact ground truth?
+\item Which PPO tensors remain fixed across optimization epochs?
+\item Why does actor-loss backpropagation not update an independent critic?
 \end{enumerate}
+\textbf{Study status:} Chapter 1 first pass finished. Next, derive the policy gradient and learn why baselines and clipping work. Review shared-network gradients and terminal/truncation handling later.
+\section{Source Notes}
+Core definitions and methods follow the supplied CS 8803 Fall 2026 Lecture 2 (Policy Gradients), Lecture 3 (Actor-Critic), Lecture 4 (Value-Based Methods), and Lecture 5 (Deep RL with Q-Function). Worked numerical examples and the unified PPO training explanation are our learning notes, not quotations from the slides.
