@@ -1,11 +1,217 @@
 \chapter{Value-Based RL: Q-Learning and DQN}
+\section{Learning Goals and Roadmap}
+Q-Learning $\rightarrow$ neural Q-functions $\rightarrow$ DQN
+$\rightarrow$ Double DQN. We study action selection, data, targets,
+losses, gradient flow, and limitations.
+
 \section{Why Do We Need It?}
-\TODO{Add a simple explanation and example.}
+The objective is still to maximize expected discounted return.
+A state value $V^\pi(s)$ evaluates a state, but alone does not rank
+actions without additional knowledge of rewards and dynamics.
+An action value evaluates a particular first action:
+\begin{equation}
+Q^\pi(s,a)=\E_\pi\left[\sum_{k=0}^{\infty}\gamma^k r_{t+k}
+\mid s_t=s,a_t=a\right].
+\end{equation}
+After that first action, the agent follows $\pi$. The optimal
+action value $Q^*(s,a)$ assumes optimal subsequent behavior.
+For finite discrete actions, a greedy policy selects
+$\arg\max_a Q(s,a)$. This is the best action according to the
+current estimate, not necessarily the truly optimal action.
+
+\section{Tabular Q-Learning}
+Store one estimate for each state-action pair. For a sampled
+transition $(s,a,r,s',d)$, with $d=1$ for genuine termination,
+\begin{align}
+y &= r+\gamma(1-d)\max_{a'}Q(s',a'),\\
+\delta &= y-Q(s,a),\\
+Q(s,a)&\leftarrow Q(s,a)+\alpha\delta.
+\end{align}
+The Bellman optimality equation motivates this sampled target:
+\begin{equation}
+Q^*(s,a)=\E_{r,s'\mid s,a}
+[r+\gamma(1-d)\max_{a'}Q^*(s',a')].
+\end{equation}
+Example: $Q(s,a)=3$, $r=2$, $\gamma=0.9$, and next-state
+values $(4,6)$. Then $y=7.4$, $\delta=4.4$, and with
+$\alpha=0.1$ the updated entry is $3.44$.
+The maximum expresses optimal subsequent behavior; averaging
+action values would correspond to a different subsequent policy.
+
+\subsection{Exploration and Off-Policy Learning}
+An epsilon-greedy behavior policy chooses a random action with
+probability $\epsilon$ and a greedy action otherwise.
+The update still uses the greedy next-state value even if the
+next action actually taken is exploratory. Thus data collection
+and the target policy can differ: Q-learning is off-policy.
+If next-state values are $(4,6)$ and exploration chooses the first
+action, the previous transition's bootstrap value remains $6$.
+
 \section{Models and Inputs/Outputs}
-\TODO{Describe networks and action selection.}
-\section{Data, Targets, Losses, and Gradients}
-\TODO{Add equations and training pseudocode.}
-\section{Links to Other Methods}
-\TODO{Compare with earlier algorithms.}
+A neural Q-function replaces a table when states are high-dimensional
+or too numerous. A common discrete-action architecture maps
+$s\in\R^{n_s}$ to a vector in $\R^{n_a}$, with one Q-value per action.
+These are return estimates, not probabilities; no softmax is needed.
+For a batch, states have shape $[B,n_s]$ and outputs $[B,n_a]$.
+For each transition, select the value of the action actually executed,
+not the largest current-state output.
+Example: outputs $(2,3)$ and stored action index $0$ give prediction $2$.
+Shared parameters enable generalization but also make updates affect
+other states and actions.
+
+\section{DQN: Replay and Target Networks}
+DQN combines a neural Q-function with experience replay and a slowly
+updated target network.
+\begin{description}[style=nextline]
+\item[Online network $Q_\theta$] Selects interaction actions and produces
+current predictions. Its parameters are updated by gradient descent.
+\item[Target network $Q_{\bar\theta}$] Produces bootstrap estimates.
+It is initialized from the online network and periodically refreshed
+by $\bar\theta\leftarrow\theta$ in the hard-update version studied here.
+\item[Replay buffer] Stores observed transitions $(s,a,r,s',d)$.
+Random minibatches reduce temporal correlation and reuse experience.
+Stored transitions remain fixed; targets are computed when sampled.
+\end{description}
+\begin{align}
+y_i&=r_i+\gamma(1-d_i)\max_{a'}Q_{\bar\theta}(s'_i,a'),\\
+L(\theta)&=\frac1B\sum_i
+\left[Q_\theta(s_i,a_i)-\operatorname{stopgrad}(y_i)\right]^2.
+\end{align}
+Squared error illustrates the principle; Huber loss is also common.
+Gradient flows through the current prediction only.
+Detaching a target prevents differentiation through it in that update,
+but does not make its numerical value permanently fixed.
+
+\subsection{Complete Training Flow}
+\begin{enumerate}
+\item Use the online network with epsilon-greedy exploration to act.
+\item Observe the transition and store it in replay.
+\item Randomly sample a minibatch, possibly containing old experience.
+\item Compute executed-action predictions with the online network.
+\item Compute next-state targets with the target network, without gradients.
+\item Backpropagate the loss and update the online network.
+\item At the chosen interval, copy online parameters into the target network.
+\end{enumerate}
+Interaction and optimization need not use the same transition.
+Updating Q-values implicitly changes the greedy policy: values $(5,3)$
+choose left, while later values $(5,7)$ choose right, without an actor update.
+
+\subsection{Minimal Code Data Flow}
+\begin{verbatim}
+# states, next_states: [B, obs_dim]
+# actions: [B, 1], integer indices
+# rewards, terminated: [B, 1]
+q_pred = online_net(states).gather(1, actions)
+with torch.no_grad():
+    next_best = target_net(next_states).max(
+        dim=1, keepdim=True).values
+    target = rewards + gamma * (
+        1 - terminated.float()) * next_best
+loss = ((q_pred - target) ** 2).mean()
+optimizer.zero_grad()
+loss.backward()
+optimizer.step()
+# Periodically: target_net.load_state_dict(online_net.state_dict())
+\end{verbatim}
+This is schematic code. Handle environment resets and truncations
+correctly: a time-limit truncation is not automatically a genuine
+terminal state, and bootstrapping may require its final observation.
+
+\begin{pitfall}
+For ordinary DQN, a fixed transition has a fixed target between
+hard target-network updates, assuming deterministic network outputs.
+When the target network is refreshed, the target can change even
+though the observed reward has not changed.
+\end{pitfall}
+
+\section{Double DQN: Separate Selection and Evaluation}
+Taking a maximum over noisy estimates can cause overestimation.
+If both true action values are $5$, estimates alternating between
+$(4,6)$ and $(6,4)$ are individually unbiased, but their maximum
+is always $6$.
+Ordinary DQN uses the target network both to select the largest
+next-state action value and to evaluate that action.
+Double DQN instead uses:
+\begin{align}
+a_i^*&=\arg\max_{a'}Q_\theta(s'_i,a'),\\
+y_i^{Double}&=r_i+\gamma(1-d_i)Q_{\bar\theta}(s'_i,a_i^*).
+\end{align}
+The existing two networks and their update schedule can remain the same;
+the change is the construction of the target.
+For online values $(8,3)$ and target values $(4,7)$, DQN bootstraps
+with $7$, while Double DQN selects the first action online and evaluates
+it as $4$ using the target network.
+Separating selection and evaluation reduces max-related overestimation,
+but does not guarantee removal of all bias; network errors remain correlated.
+If both networks are identical, their targets coincide.
+
+\begin{verbatim}
+with torch.no_grad():
+    next_actions = online_net(next_states).argmax(
+        dim=1, keepdim=True)                 # [B, 1]
+    next_q = target_net(next_states).gather(
+        1, next_actions)                     # [B, 1]
+    target = rewards + gamma * (
+        1 - terminated.float()) * next_q
+\end{verbatim}
+The prediction and loss are unchanged.
+Stored actions index actual past behavior at the current state.
+Next actions are freshly selected to construct next-state targets.
+Both operations above occur without gradients.
+
+\begin{pitfall}
+Double DQN targets can change even while target-network parameters
+are fixed, because the online-selected action can change.
+If target values remain $(4,7)$ while online values change from
+$(8,3)$ to $(2,9)$, the bootstrap value changes from $4$ to $7$.
+This selection concerns the training target. Environment interaction
+still ordinarily uses online epsilon-greedy action selection.
+\end{pitfall}
+
+\section{Links to Other Methods and Limitations}
+Yesterday's stochastic actor--state-value critic learns a policy
+distribution and a scalar $V(s)$. The critic helps train the actor
+through advantage estimates. DQN learns action values and derives
+a greedy policy directly. Actor-critic critics may also be Q-functions,
+and actors need not always be stochastic.
+PPO reuses a recent rollout with fixed batch advantages and return
+targets over optimization epochs; DQN reuses replay transitions
+and recomputes bootstrap targets when sampled.
+
+Standard DQN enumerates finite actions. Continuous actions would require
+solving $\arg\max_a Q(s,a)$ over a continuous space at each decision.
+The next chapter introduces actors that directly output continuous
+actions and learn to increase their critic's estimated Q-value.
+For a deterministic actor, this motivates
+$J(\theta)=\E_s[Q_\phi(s,\mu_\theta(s))]$.
+
+Neural approximation, bootstrapping, and off-policy learning together
+form the deadly triad: their combination can cause instability or
+divergence. Replay, target networks, and Double DQN improve practical
+learning but do not provide general convergence guarantees for
+nonlinear neural Q-learning. Exploration and data coverage also matter.
+
 \section{Review Questions}
-\TODO{Add our questions after the study session.}
+\begin{enumerate}
+\item Why can a Q-function directly rank actions while a state value alone cannot?
+\item Why does Q-learning take a next-action maximum instead of an average?
+\item Why can an exploratory transition train a greedy target policy?
+\item Which current-state output enters the loss, and why?
+\item How does no-gradient target computation differ from freezing its values?
+\item Why can the same replay transition receive a new DQN target?
+\item What are the separate roles of replay and the target network?
+\item In Double DQN, which network selects and which evaluates the next action?
+\item Can a Double DQN target change before the target network is refreshed?
+\item Why is continuous-action maximization harder, and how might an actor help?
+\end{enumerate}
+
+\section{Learning Status and Source Notes}
+First study pass completed on October 13, 2026.
+Clarified distinctions: executed action versus target action;
+ordinary DQN's two networks versus Double DQN's selection/evaluation split;
+fixed transitions versus recomputed targets; and implicit greedy-policy
+improvement versus explicit actor learning.
+Course basis: supplied Lectures 4 and 5 on value-based methods and
+deep Q-functions, supplemented by our guided explanations and examples.
+This chapter is a first-pass study note, not an exhaustive account of
+all lecture topics or a verbatim slide transcription.
