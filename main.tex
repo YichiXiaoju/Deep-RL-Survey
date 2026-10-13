@@ -1,0 +1,56 @@
+\documentclass[11pt,a4paper]{ctexbook}
+\usepackage[margin=26mm]{geometry}
+\usepackage{amsmath,amssymb,amsthm,mathtools,bm}
+\usepackage{booktabs,tabularx,array,longtable}
+\usepackage{hyperref,xcolor,tcolorbox,enumitem}
+\usepackage{algorithm,algpseudocode}
+\usepackage{fancyhdr}
+\tcbuselibrary{breakable}
+\hypersetup{colorlinks=true,linkcolor=blue!55!black,urlcolor=blue!55!black}
+\newcommand{\E}{\mathbb{E}}
+\newcommand{\Prob}{\mathbb{P}}
+\newcommand{\A}{\mathcal{A}}
+\newcommand{\Sset}{\mathcal{S}}
+\newcommand{\D}{\mathcal{D}}
+\newcommand{\R}{\mathbb{R}}
+\newcommand{\G}{\mathcal{G}}
+\newcommand{\TODO}[1]{\textcolor{red!70!black}{[待补充：#1]}}
+\newtcolorbox{intuition}{colback=blue!3,colframe=blue!40!black,title=Intuition,breakable}
+\newtcolorbox{pitfall}{colback=orange!3,colframe=orange!45!black,title=常见混淆,breakable}
+\setlength{\headheight}{14pt}
+\pagestyle{fancy}\fancyhf{}\fancyhead[LE,RO]{Deep RL Survey}\fancyfoot[C]{\thepage}
+\title{Deep Reinforcement Learning\\\large 从基础原理到现代算法：持续更新的学习综述}
+\author{CS 8803 学习项目}
+\date{Version 0.1 \quad 2026-10-12}
+\begin{document}
+\frontmatter\maketitle
+\chapter*{写在前面}
+本文档是基于 Georgia Tech CS 8803 Deep Reinforcement Learning (Fall 2026) 课程讲义组织的学习手册，不是完整的文献综述。当前版本以课程结构为基础，加入明确标识的学习性解释和例子；后续将逐节加入原始论文、推导、PyTorch 代码、图表与研究讨论。未完成的章节明确标记，避免将目录误认为已掌握的知识。
+\tableofcontents
+\mainmatter
+\input{chapters/00_overview}
+\input{chapters/01_fundamentals}
+\input{chapters/02_policy_optimization}
+\input{chapters/03_value_based}
+\input{chapters/04_continuous_control}
+\input{chapters/05_model_based}
+\input{chapters/06_imitation_inverse}
+\input{chapters/07_comparison}
+\input{chapters/08_research_notes}
+\appendix
+\chapter{版本与学习日志}
+\begin{itemize}
+\item 2026-10-12 (v0.1): 搭建工程；完成算法地图与 RL Fundamentals 基础内容；创建后续章节的结构化模板。
+\end{itemize}
+\chapter{课程材料索引}
+\begin{itemize}
+\item Lec 0: Introduction \& Logistics.
+\item Lec 1: Learning from Data / Supervised Learning and Imitation Learning.
+\item Lec 2: Policy Gradients.
+\item Lec 3: Actor-Critic Algorithms.
+\item Lec 4: Value Based Methods.
+\item Lec 5: Deep RL with Q-Function.
+\item DDPG + TD3 + SAC lecture (provided lecture PDF).
+\item Lec 7 \& 8: Model Based Reinforcement Learning.
+\end{itemize}
+\end{document}
