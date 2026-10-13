@@ -1,0 +1,36 @@
+\chapter{总体地图：不同 RL 算法究竟在学习什么？}
+\section{共同目标}
+强化学习研究的是序列决策。Agent 在状态 $s_t$ 观察环境，选择动作 $a_t$，获得奖励 $r_t$ 并到达下一状态 $s_{t+1}$。典型目标是最大化期望折扣回报：
+\begin{equation}\label{eq:objective}
+J(\pi)=\E_{\tau\sim p_\pi(\tau)}\!\left[\sum_{t=0}^{T-1}\gamma^t r_t\right].
+\end{equation}
+不同算法的核心区别，不是“都在用什么神经网络”，而是\textbf{使用什么信息帮助选动作，训练哪些函数，以及如何获取监督信号}。
+\section{三个不同的学习对象}
+\begin{description}[style=nextline]
+\item[Policy: $\pi_\theta(a\mid s)$] 给定状态，直接规定动作分布。离散动作下可输出各动作概率；确定性策略 $\mu_\theta(s)$ 可直接输出动作。
+\item[Value / Q: $V^\pi(s)$, $Q^\pi(s,a)$] 估计未来累计回报。仅有 $Q$ 的离散动作控制可选 $\arg\max_a Q(s,a)$；连续动作下通常还需 Actor 或优化器。
+\item[Dynamics: $P(s'\mid s,a)$] 预测执行动作之后环境怎么变化；单独的 Dynamics Model 通常\textbf{不直接}给出最优动作，需要规划、优化或结合策略学习。
+\end{description}
+\begin{intuition}
+Policy 回答“我应该做什么”；Q 回答“做这件事有多好”；Dynamics 回答“做完之后会发生什么”。这是全书最重要的区分。
+\end{intuition}
+\section{主流算法定位}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}l l X@{}}\toprule
+算法／机制 & 学习目标 & 定位及动机 \\\midrule
+REINFORCE / VPG & Policy & 直接优化轨迹回报；梯度估计可能方差大 \\
+Actor-Critic & Policy + $V$/$Q$ & 用 Critic 评估和引导 Actor \\
+GAE & Advantage estimate & 控制估计的 bias--variance tradeoff；不是独立 RL 算法 \\
+PPO & Policy + (通常) $V$ & 限制策略变化，改善更新稳定性 \\
+DQN & $Q$ & 从离散动作的价值函数中抽取贪心策略 \\
+Double DQN & $Q$ & 减轻 max 运算导致的高估 \\
+DDPG & $\mu$ + $Q$ & 将 off-policy actor-critic 扩展到连续动作 \\
+TD3 & $\mu$ + 两个 $Q$ & 缓解 DDPG 的高估和不稳定 \\
+SAC & 随机 Policy + $Q$ & 将熵正则引入 off-policy actor-critic \\
+MPC + CEM & Dynamics + Optimizer & 利用环境模型反复规划动作；CEM 是优化器 \\\bottomrule
+\end{tabularx}
+\end{center}
+\section{不要混淆“算法”“估计器”“训练技巧”}
+Replay Buffer 是数据存储及重复利用机制；Target Network 通过慢更新构造较稳定的 TD Target；GAE 是 Advantage 估计方法；CEM 是搜索优化方法；PPO、DQN、SAC 是具体学习算法。各自处于不同的抽象层次。
+\section{本文统一阅读框架}
+每种算法回答六个问题：\textbf{Why}（要解决什么问题）、\textbf{Architecture}（哪些网络及输入输出）、\textbf{Data}（On/Off Policy）、\textbf{Objective}（训练目标）、\textbf{Gradient}（梯度流向谁）、\textbf{Act}（训练后怎样选动作）。
