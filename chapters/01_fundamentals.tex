@@ -1,0 +1,65 @@
+\chapter{RL Fundamentals：价值与学习信号}
+\section{Markov Decision Process}
+一个常见的 MDP 写为 $\mathcal M=(\Sset,\A,P,r,\gamma,\rho_0)$，其中 $P(s'\mid s,a)$ 表示状态转移，$r(s,a)$ 为期望即时奖励，$\gamma\in[0,1)$ 为折扣因子，$\rho_0$ 为初始状态分布。有限回合可采用相应的终止条件。
+\begin{align}
+ s_0 &\sim \rho_0, & a_t &\sim \pi(\cdot\mid s_t),\\
+ s_{t+1}&\sim P(\cdot\mid s_t,a_t), & r_t&\sim p(\cdot\mid s_t,a_t,s_{t+1}).
+\end{align}
+\section{Return、State Value、Action Value}
+从时间 $t$ 开始的折扣回报为
+\begin{equation}G_t=\sum_{k=0}^{T-t-1}\gamma^k r_{t+k}.\end{equation}
+相对一条固定策略 $\pi$，定义
+\begin{align}
+V^\pi(s)&=\E_\pi[G_t\mid s_t=s],\\
+Q^\pi(s,a)&=\E_\pi[G_t\mid s_t=s,a_t=a],\\
+A^\pi(s,a)&=Q^\pi(s,a)-V^\pi(s).
+\end{align}
+\begin{intuition}
+$V^\pi(s)$：我目前处于这个状态，之后一直跟随 $\pi$，平均能拿到多少回报？
+$Q^\pi(s,a)$：我现在\emph{先做指定动作 $a$}，之后再跟随 $\pi$，回报如何？
+$A^\pi(s,a)$：这个动作是否比该状态下的策略平均水平更好？
+\end{intuition}
+\section{Bellman Expectation vs. Bellman Optimality}
+对已给定的策略 $\pi$，Bellman Expectation Equation 为
+\begin{align}\label{eq:bellman-v}
+V^\pi(s)&=\E_{a\sim\pi,\,s'\sim P}\big[r(s,a)+\gamma V^\pi(s')\big],\\
+Q^\pi(s,a)&=\E_{s'\sim P}\left[r(s,a)+\gamma\E_{a'\sim\pi(\cdot\mid s')}Q^\pi(s',a')\right].
+\end{align}
+对最优策略，对应 Bellman Optimality Equation：
+\begin{equation}\label{eq:bellman-opt}
+Q^*(s,a)=\E_{s'\sim P}\left[r(s,a)+\gamma\max_{a'}Q^*(s',a')\right].
+\end{equation}
+这里的区别至关重要：\textbf{Policy Evaluation} 计算固定策略的好坏；\textbf{Policy Improvement} 借助 Value/Q 寻找更优动作；最优 Bellman 备份在后续动作上使用 $\max$。
+\section{Monte Carlo 与 Temporal Difference}
+不知道真正的 $V^\pi$ 时，可以从轨迹构造学习信号。Monte Carlo 使用真实采样的未来回报：
+\begin{equation}y_t^{\mathrm{MC}}=G_t.\end{equation}
+一步 TD 使用即时奖励和\emph{当前估计的未来价值}：
+\begin{equation}\label{eq:td}
+y_t^{\mathrm{TD}}=r_t+\gamma(1-d_t)V_{\bar\phi}(s_{t+1}), \qquad
+\delta_t=y_t^{\mathrm{TD}}-V_\phi(s_t).
+\end{equation}
+$d_t$ 在此表示真正终止状态指示；时间截断与真正终止需按照实现约定分别处理。用于回归的典型 Critic Loss 为
+\begin{equation}\mathcal L_V(\phi)=\E_{(s_t,r_t,s_{t+1})\sim\D}\!\left[(V_\phi(s_t)-\operatorname{stopgrad}(y_t^{\mathrm{TD}}))^2\right].\end{equation}
+\begin{pitfall}
+TD Target 并不是“真正的价值 Ground Truth”，而是通过 Bootstrap 构造的学习目标。训练 Value Network 不是把动作与网络输出做均方误差，而是把价值预测与\emph{目标回报}做回归。Target 中的未来价值一般不反向传播。
+\end{pitfall}
+\section{一个具体数字示例}
+假设 $r_t=2$, $\gamma=0.9$, $V_{\bar\phi}(s_{t+1})=5$, $V_\phi(s_t)=8$，且不是终止状态，则
+\begin{equation}y_t^{\mathrm{TD}}=2+0.9\cdot5=6.5,\qquad\delta_t=6.5-8=-1.5.\end{equation}
+在其他因素固定的情况下，Value Network 对该样本的预测应向 $6.5$ 靠近。这里 $6.5$ 仍是\emph{估计出的 target}，不是已知最优值。
+\section{Policy Gradient 与 Advantage 的关系}
+一个常见的 Policy Gradient 形式是
+\begin{equation}\label{eq:pg}
+\nabla_\theta J(\theta)=\E_\pi\left[\sum_t \nabla_\theta\log\pi_\theta(a_t\mid s_t)A^\pi(s_t,a_t)\right],
+\end{equation}
+其中具体时序权重与采样分布需和所用目标函数的约定一致。优势为正，倾向提高采样动作的概率；优势为负，倾向降低概率。Critic 则通过 Value/Q 的回归 Loss 学习，而非直接使用 Actor 的目标。
+\section{GAE 预告：不是单独的网络}
+Generalized Advantage Estimation 在给定当前轨迹和固定 Value 估计的情况下，结合多个时间跨度的 TD Residual：
+\begin{equation}\hat A_t^{\mathrm{GAE}(\gamma,\lambda)}=\sum_{l=0}^{T-t-1}(\gamma\lambda)^l\delta_{t+l},\end{equation}
+上式假设在轨迹结束处作合适的截断，实际计算还需要正确的 terminal mask。$\lambda$ 控制更多使用短期 bootstrap 或更长期的采样回报，从而影响偏差和方差。\textbf{GAE 通常在一批轨迹收集完之后先计算；PPO 对同一批数据做多次 minibatch 更新时，计算好的 Advantage 往往保持固定。}新一批轨迹则重新计算。
+\section{本章自测}
+\begin{enumerate}
+\item 为什么 $Q^\pi(s,a)$ 比 $V^\pi(s)$ 多一个 Action 输入？
+\item TD Target $r+\gamma V(s')$ 中的 $V(s')$ 不准确时，会发生什么？
+\item 为什么 GAE 是估计器而不是新的 Policy 或 Dynamics Network？
+\end{enumerate}
