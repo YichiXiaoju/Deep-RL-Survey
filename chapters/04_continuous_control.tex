@@ -1,11 +1,369 @@
 \chapter{Continuous Control: DDPG, TD3, SAC}
-\section{Why Do We Need It?}
-\TODO{Add a simple explanation and example.}
-\section{Models and Inputs/Outputs}
-\TODO{Describe networks and action selection.}
-\section{Data, Targets, Losses, and Gradients}
-\TODO{Add equations and training pseudocode.}
-\section{Links to Other Methods}
-\TODO{Compare with earlier algorithms.}
+\section{Learning Goals and Roadmap}
+DDPG learns an actor for continuous-action Q-learning.
+TD3 improves critic targets and actor-update stability.
+SAC learns a stochastic policy under an entropy-regularized objective.
+We distinguish stored actions, current-policy actions, target actions,
+and their gradient paths.
+
+\section{Why Continuous Actions Need an Actor}
+Discrete DQN outputs one value per action and selects an argmax.
+Continuous actions cannot be fully enumerated. A network $Q_\phi(s,a)$
+can evaluate an action, but solving $\arg\max_a Q_\phi(s,a)$ at every
+decision can be expensive. DDPG learns an approximate maximizer
+$\mu_\theta(s)$ that directly outputs a continuous action.
+This does not guarantee global maximization.
+All three methods are model-free and off-policy and use replay.
+
+\section{DDPG: Networks, Data, and Targets}
+DDPG means Deep Deterministic Policy Gradient.
+The online actor maps states $[B,n_s]$ to actions $[B,n_a]$.
+The online Q-critic takes states and actions and outputs $[B,1]$.
+A critic is a role: it can be $V(s)$ or $Q(s,a)$, with different inputs.
+DDPG maintains target copies of both networks, for four networks total.
+
+Interaction typically uses
+\begin{equation}
+a_t=\operatorname{clip}(\mu_\theta(s_t)+\epsilon_t,a_{\min},a_{\max}).
+\end{equation}
+Replay stores this actual noisy, clipped action with its observed
+reward, next state, and genuine-termination flag.
+For sampled $(s,a,r,s',d)$:
+\begin{align}
+a'&=\mu_{\bar\theta}(s'),\\
+y&=r+\gamma(1-d)Q_{\bar\phi}(s',a'),\\
+L_Q(\phi)&=\E[(Q_\phi(s,a)-\operatorname{stopgrad}(y))^2].
+\end{align}
+The current prediction uses the stored action. Replacing it with
+a new actor action would mismatch the observed reward and next state.
+The target is partly observation and partly prediction, not an
+entirely ground-truth return.
+
+\subsection{Actor Loss and Gradient Source}
+For replay states, propose fresh actor actions:
+\begin{align}
+J_\mu(\theta)&=\E_{s\sim\D}[Q_\phi(s,\mu_\theta(s))],\\
+L_\mu(\theta)&=-J_\mu(\theta),\\
+\nabla_\theta J_\mu
+&=\E_s\left[
+\left.\nabla_a Q_\phi(s,a)\right|_{a=\mu_\theta(s)}
+\nabla_\theta\mu_\theta(s)\right].
+\end{align}
+This is the practical replay-based objective.
+Fix critic parameters during actor optimization, but retain derivatives
+with respect to its action input. No environment derivative is needed.
+A critic $Q(s,a)=10-(a-0.7)^2$ has action derivative $0.8$ at $a=0.3$,
+guiding a local increase in the actor's output. Wrong learned slopes
+can mislead the actor.
+
+\begin{pitfall}
+Freezing critic parameters preserves the action-input gradient.
+Detaching an actor action preserves its value but cuts its connection
+to actor parameters. Detach does not remove the action from the input
+or convert a Q-critic into a V-critic.
+\end{pitfall}
+
+\begin{verbatim}
+with torch.no_grad():
+    next_a = target_actor(next_states)
+    y = rewards + gamma * (1 - terminated.float()) * \
+        target_critic(next_states, next_a)
+critic_loss = (critic(states, stored_actions) - y).square().mean()
+critic_optimizer.zero_grad()
+critic_loss.backward()
+critic_optimizer.step()
+
+for p in critic.parameters():
+    p.requires_grad_(False)
+actor_optimizer.zero_grad()
+actor_loss = -critic(states, actor(states)).mean()
+actor_loss.backward()
+actor_optimizer.step()
+for p in critic.parameters():
+    p.requires_grad_(True)
+\end{verbatim}
+
+\subsection{Target Actor and Soft Updates}
+The online actor learns through the online critic.
+The target actor only supplies next-state actions for critic labels.
+It has no separate actor loss. Slowly follow online parameters:
+\begin{equation}
+\bar\theta\leftarrow(1-\tau)\bar\theta+\tau\theta,\qquad
+\bar\phi\leftarrow(1-\tau)\bar\phi+\tau\phi.
+\end{equation}
+Even with a fixed target critic, changing its action input can change
+the target value. A slow actor copy reduces that movement but lags
+behind the newest policy.
+
+\subsection{Connection to Yesterday's Actor-Critic}
+A basic stochastic actor loss is
+$-\E[\log\pi_\theta(a_{\rm stored}\mid s)\operatorname{stopgrad}(\hat A)]$.
+It changes the probability of an observed action according to advantage.
+DDPG changes a newly proposed action using the critic's action derivative.
+For a Gaussian with fixed standard deviation,
+$\partial\log\pi/\partial m=(a-m)/\sigma^2$:
+positive advantage for $a=0.4$ with mean $0.3$ pulls the mean toward
+the observed action. A V-critic action derivative is not required.
+At a fixed state, $-V_\phi(s)$ contains no independent actor parameters
+and cannot directly train that actor.
+
+\section{TD3: Three Improvements}
+TD3 means Twin Delayed Deep Deterministic Policy Gradient.
+An actor maximizing an inaccurate critic can exploit spurious Q peaks,
+and bootstrapping can propagate these errors.
+
+\subsection{Clipped Double Q-Learning}
+Train two online critics with separate parameters and random
+initializations, and maintain their target copies:
+\begin{align}
+y&=r+\gamma(1-d)\min_{i=1,2}Q_{\bar\phi_i}(s',\tilde a'),\\
+L_{Q_i}&=\E[(Q_{\phi_i}(s,a)-\operatorname{stopgrad}(y))^2].
+\end{align}
+Both regress toward the same label. For $r=2$, $\gamma=0.9$,
+and target estimates $(12,8)$, the target is $9.2$.
+Online predictions $(7,10)$ move upward and downward respectively.
+The minimum reduces overestimation but can cause underestimation;
+correlated errors remain possible.
+Double DQN separates action selection from evaluation.
+TD3 instead evaluates one actor-proposed action with two critics.
+
+\subsection{Delayed Policy Updates}
+Critics update every optimization step, but the actor less frequently.
+For policy delay 2:
+\begin{center}
+\begin{tabular}{c l l l}
+\toprule Step & Online critics & Online actor & All targets\\
+\midrule
+1 & Update & Skip & Skip\\
+2 & Update & Update & Soft update\\
+3 & Update & Skip & Skip\\
+4 & Update & Update & Soft update\\
+\bottomrule
+\end{tabular}
+\end{center}
+Delay means frequency, not simply updating the critic before the actor.
+Without delay both can update every step.
+Extra critic updates allow evaluation to improve before guiding
+the actor; this is not a guarantee of accuracy.
+Standard TD3 trains the actor using online critic 1:
+\begin{equation}
+L_\mu=-\E[Q_{\phi_1}(s,\mu_\theta(s))].
+\end{equation}
+A loss using only target actor and target critic cannot train the
+online actor: its parameters are absent from that computation graph.
+An optimizer cannot create a missing gradient connection.
+
+\subsection{Target Policy Smoothing}
+\begin{align}
+\epsilon&\sim\mathcal N(0,\sigma_{\rm target}^2I),\\
+\tilde\epsilon&=\operatorname{clip}(\epsilon,-c,c),\\
+\tilde a'&=\operatorname{clip}(
+\mu_{\bar\theta}(s')+\tilde\epsilon,a_{\min},a_{\max}).
+\end{align}
+Both target critics evaluate the same perturbed action.
+Repeated sampling smooths target learning near the proposed action,
+reducing dependence on narrow erroneous Q peaks. Usually one
+perturbation per transition is sampled, rather than explicitly
+averaging an entire neighborhood.
+Exploration noise affects actual environment actions;
+target smoothing noise affects training labels only.
+
+TD3 has six networks: one actor, two critics, and three target copies.
+Collect online-actor noisy behavior, sample replay, construct
+no-gradient smoothed twin-Q targets, and update both critics.
+At the policy-delay interval, update the actor and soft-update all targets.
+For a stored action $0.4$, a target next action $0.62$, and current actor
+output $0.5$, the three actions serve critic regression, target
+construction, and actor training respectively.
+
+\section{SAC: Reward Plus Entropy}
+SAC means Soft Actor-Critic. We study the common modern version:
+one stochastic actor, two online Q-critics, two target Q-critics,
+and replay, typically no target actor or separate V-network.
+Earlier SAC formulations differ.
+\begin{equation}
+J(\pi)=\E_{\tau\sim\pi}\left[
+\sum_t\gamma^t(r_t+\alpha\mathcal H(\pi(\cdot\mid s_t)))\right].
+\end{equation}
+Temperature $\alpha>0$ weights entropy relative to reward.
+Entropy encourages maintaining alternative actions, not unconditional
+random behavior. A stochastic actor does not imply on-policy learning.
+
+\subsection{Entropy, Density, and an Example}
+\begin{equation}
+\mathcal H(\pi(\cdot\mid s))=-\E_{a\sim\pi}[\log\pi(a\mid s)].
+\end{equation}
+For fixed discrete action values $(10,9)$, always choosing the first
+gives value-plus-entropy objective $10$. Equal probabilities give
+$9.5+\alpha\log2$, or $10.193$ at $\alpha=1$.
+A large value gap can outweigh the entropy incentive.
+This example illustrates a local policy-improvement objective.
+
+Continuous $\pi(a\mid s)$ is a density, not a point probability.
+A uniform density on $[0,0.1]$ equals $10$ and integrates to $1$;
+a subinterval of width $0.01$ has probability $0.1$.
+A Gaussian of standard deviation $0.1$ has peak density $3.99$,
+with negative log-density approximately $-1.38$ there.
+Differential entropy can be negative and depends on action coordinates.
+A single action's density does not determine the whole policy's entropy.
+
+\subsection{Actor Outputs and Reparameterization}
+The actor usually outputs mean and log standard deviation,
+both shaped $[B,n_a]$:
+\begin{align}
+\epsilon&\sim\mathcal N(0,I),\\
+u&=m_\theta(s)+\sigma_\theta(s)\odot\epsilon,\\
+a&=\tanh(u).
+\end{align}
+Noise is parameter-independent but actions remain differentiable
+functions of actor parameters. Use reparameterized sampling.
+The squashed-action log-density requires a change-of-variables correction:
+\begin{equation}
+\log\pi(a\mid s)=
+\log\mathcal N(u;m_\theta,\operatorname{diag}(\sigma_\theta^2))
+-\sum_j\log(1-\tanh^2(u_j)).
+\end{equation}
+Implement stable numerical forms and include any action-rescaling
+Jacobian. Sum component log-densities to shape $[B,1]$.
+
+\subsection{Critic Targets and Losses}
+\begin{align}
+a'&\sim\pi_\theta(\cdot\mid s'),\\
+y&=r+\gamma(1-d)
+[\min_iQ_{\bar\phi_i}(s',a')-\alpha\log\pi_\theta(a'\mid s')],\\
+L_{Q_i}&=\E[(Q_{\phi_i}(s,a_{\rm stored})
+-\operatorname{stopgrad}(y))^2].
+\end{align}
+The entire target computation, including current-policy sampling,
+has no gradients. Slow target critics stabilize estimation.
+Using the current actor reflects the latest policy, but its changes
+and fresh samples can change labels even while target critics are fixed.
+DDPG/TD3 choose additional slow actor copies to reduce action movement.
+Neither choice is universally necessary; entropy alone does not
+guarantee stability without a target actor.
+
+With $r=2$, $\gamma=0.9$, $\alpha=0.2$, target Qs $(8,10)$,
+and next log-density $-1$, $y=2+0.9(8+0.2)=9.38$.
+Both online critics regress on the stored action toward this label.
+
+\subsection{Actor Loss and Gradient Flow}
+At replay states, sample fresh current actions with reparameterization:
+\begin{equation}
+L_\pi=\E_{s,\epsilon}
+[\alpha\log\pi_\theta(a_\theta\mid s)
+-\min_iQ_{\phi_i}(s,a_\theta)].
+\end{equation}
+Fix online critic parameters but preserve their action derivatives.
+The negative Q-term favors valuable actions; expected log-density
+encourages entropy. Standard SAC uses both online critics' minimum
+in the actor objective; TD3 typically uses online Q1.
+For online Qs $(7,9)$ and log-density $-0.7$, sample loss is
+$0.2(-0.7)-7=-7.14$. Loss need not be nonnegative;
+its derivatives determine the update.
+
+PPO retains stored actions and recomputes their probabilities using
+fixed rollout advantages. SAC samples new actions at replay states
+for a different actor objective.
+
+\begin{verbatim}
+# actor.sample uses reparameterization and corrected log-density.
+# actions: [B, act_dim]; log-density and Q: [B, 1]
+with torch.no_grad():
+    next_a, next_logp = actor.sample(next_states)
+    next_q = torch.minimum(
+        target_q1(next_states, next_a),
+        target_q2(next_states, next_a))
+    y = rewards + gamma * (1 - terminated.float()) * \
+        (next_q - alpha * next_logp)
+critic_loss = (
+    (q1(states, stored_actions) - y).square()
+    + (q2(states, stored_actions) - y).square()).mean()
+# Clear gradients, backward, step critic optimizer.
+
+# Freeze online critic parameters; retain action derivatives.
+new_a, logp = actor.sample(states)
+q = torch.minimum(q1(states, new_a), q2(states, new_a))
+actor_loss = (alpha.detach() * logp - q).mean()
+# Clear gradients, backward, step actor optimizer.
+# Restore critic parameters; soft-update both target critics.
+\end{verbatim}
+Here alpha is a tensor; use a constant directly for fixed temperature.
+Handle truncations separately from genuine terminal states and use
+the correct final observation for bootstrapping.
+
+\subsection{Automatic Temperature Adjustment}
+A common extension learns alpha using a target average entropy
+$\mathcal H_{\rm target}$. At fixed policy:
+\begin{equation}
+L_\alpha=\alpha(\E[-\log\pi]-\mathcal H_{\rm target}).
+\end{equation}
+Entropy below target increases alpha; entropy above target decreases it.
+Optimize $\beta=\log\alpha$ so $\alpha=e^\beta>0$.
+Writing $\hat{\mathcal H}=-\operatorname{stopgrad}(\log\pi)$,
+the exact reparameterized dual loss is
+$e^\beta(\hat{\mathcal H}-\mathcal H_{\rm target})$.
+A common surrogate is
+$\beta(\hat{\mathcal H}-\mathcal H_{\rm target})$:
+same update direction but different gradient scaling.
+\begin{verbatim}
+alpha_loss = -(log_alpha *
+    (logp.detach() + target_entropy)).mean()
+# Step only the log_alpha optimizer.
+\end{verbatim}
+Temperature learning changes only the entropy weight.
+Subsequent actor updates change its distribution; alpha does not
+directly modify actor mean or variance.
+After tanh, entropy is influenced by mean location as well as variance.
+Target differential entropy can be negative.
+
+\section{Comparison and Limitations}
+\begin{center}
+\small
+\begin{tabular}{p{0.22\textwidth}p{0.20\textwidth}p{0.20\textwidth}p{0.22\textwidth}}
+\toprule Feature & DDPG & TD3 & Modern SAC\\
+\midrule
+Actor & Deterministic & Deterministic & Stochastic\\
+Online critics & One & Two & Two\\
+Target actor & Yes & Yes & Usually no\\
+Target critics & One & Two & Two\\
+Actor objective & Maximize Q & Maximize Q1 & Maximize min Q + entropy\\
+Exploration & Added noise & Added noise & Policy sampling\\
+Special mechanisms & Slow targets & Twin Q, delay, smoothing & Entropy, optional learned alpha\\
+\bottomrule
+\end{tabular}
+\normalsize
+\end{center}
+None guarantees accurate critics or global optimization.
+Twin-Q minima may be pessimistic. Delay trades responsiveness for
+stability. SAC still requires an entropy target when alpha is learned;
+reward and action scaling influence its tradeoff.
+A squashed Gaussian is a restricted policy family. Average entropy
+does not guarantee useful exploration in every state or sparse-reward task.
+Replay coverage, hyperparameters, and random seeds remain important.
+
 \section{Review Questions}
-\TODO{Add our questions after the study session.}
+\begin{enumerate}
+\item Why is continuous-action maximization harder than DQN action selection?
+\item Where does a learned critic's action-gradient signal come from?
+\item How do freezing critic parameters and detaching actor actions differ?
+\item Which actions enter critic regression, target construction, and actor training?
+\item Why can a negative-Q actor loss coexist with a target actor?
+\item How does Double DQN differ from TD3's clipped twin-Q target?
+\item Why is delay about frequency rather than update ordering?
+\item How do target smoothing and exploration noise differ?
+\item Why can probability density exceed one and differential entropy be negative?
+\item Why does SAC reparameterize actor-training samples?
+\item Which computations use target critics and which use online critics?
+\item Can SAC targets change while target critic parameters remain fixed?
+\item What happens to alpha if policy entropy is below target?
+\item Does an alpha update directly change the actor standard deviation?
+\end{enumerate}
+
+\section{Learning Status and Source Notes}
+First study pass completed on October 13, 2026.
+Based on the supplied continuous-action deep Q-functions material
+and DDPG/TD3/SAC slides, supplemented by guided numerical examples
+and code. These are study notes, not verbatim slide transcription
+or coverage of every historical implementation.
+Revisit tanh density corrections and temperature-loss conventions
+during implementation practice.
