@@ -1,4 +1,4 @@
-# Deep RL Survey — English Version (v0.6)
+# Deep RL Survey — English Version (v0.7)
 
 Plain English with mathematical LaTeX. Based on CS 8803 Fall 2026 course materials and our guided study.
 
@@ -17,4 +17,4 @@ Upload the complete project ZIP as a new project and preserve the `chapters/` fo
 ## After each study module
 Explain intuition, architecture, data, training targets, losses, gradient flow, limitations, and links to prior methods. Add short numerical examples and review questions. Mark incomplete parts clearly.
 
-**Updated:** 2026-10-13, v0.6. Completed first-pass Chapter 4 with architectures, targets, losses, gradient flow, numerical examples, training code, comparisons and review questions.
+**Updated:** 2026-10-13, v0.7. Supplemented Chapters 3 and 4 with SARSA, neural TD semi-gradients, replay data coverage, continuous-action roles, actor-gradient paths and the SAC soft Bellman derivation. Chapter 5 is next.
