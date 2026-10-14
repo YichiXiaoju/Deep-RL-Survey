@@ -1,11 +1,284 @@
-\chapter{Model-Based RL: Dynamics and Planning}
-\section{Why Do We Need It?}
-\TODO{Add a simple explanation and example.}
-\section{Models and Inputs/Outputs}
-\TODO{Describe networks and action selection.}
-\section{Data, Targets, Losses, and Gradients}
-\TODO{Add equations and training pseudocode.}
-\section{Links to Other Methods}
-\TODO{Compare with earlier algorithms.}
-\section{Review Questions}
-\TODO{Add our questions after the study session.}
+\chapter{Model-Based RL: Dynamics, Planning, and Learning}
+\section{Learning Goals and Method Landscape}
+Model-based RL uses a model of the environment to help choose actions or improve learning. The CS 8803 Lectures 7--8 distinguish \emph{decision-time planning} from \emph{background planning}. We follow that framework:
+\begin{itemize}
+\item \textbf{Decision-time}: shooting, Model Predictive Control (MPC), Cross-Entropy Method (CEM), and probabilistic ensemble planning such as PETS.
+\item \textbf{Background}: Dyna, short model-generated experience such as MBPO, model-based value expansion (MVE), and learning policies through differentiable models or planner supervision.
+\end{itemize}
+These labels are not mutually exclusive. A system can combine model-generated replay, multi-step value targets, and decision-time planning.
+The primary lecture themes are dynamics models, planning with learned models, background versus decision-time planning, trajectory optimization, simulation for learning, terminal values, and policy backpropagation. PETS-specific TS1 and TS-infinity details below are supplementary paper context, rather than a verbatim treatment from the slides.
+
+\section{What Does a Model Predict?}
+A standard transition model represents
+\begin{equation}
+P(s_{t+1}\mid s_t,a_t),\quad
+\hat s_{t+1}=f_\psi(s_t,a_t),\quad
+\hat P_\psi(s_{t+1}\mid s_t,a_t).
+\end{equation}
+A model need not be a neural network: it can be known physics, a table, or a learned predictor. A learned deterministic model can use supervised regression:
+\begin{equation}
+L_{\mathrm{dyn}}(\psi)=\frac1N\sum_{i=1}^{N}
+\|f_\psi(s_i,a_i)-s'_i\|_2^2.
+\end{equation}
+A probabilistic Gaussian model may predict the \emph{change} in state, $\Delta s=s'-s$, with mean $\mu_\psi(s,a)$ and diagonal covariance $\Sigma_\psi(s,a)$:
+\begin{equation}
+L_{\mathrm{NLL}}(\psi)=-\E_{(s,a,s')\sim\D_{\mathrm{real}}}
+\log\hat P_\psi(s'-s\mid s,a).
+\end{equation}
+These model losses are learned from actual observed transitions. Dynamics models may predict rewards and terminations too, or those may be computed from known task functions. Model-free SAC learns policy and Q-values without needing an explicit transition predictor.
+
+\section{Prediction Error and Compounding Error}
+One-step accuracy does not guarantee reliable long-horizon predictions. Suppose uniformly
+$\|\hat f(s,a)-f(s,a)\|\le\varepsilon$ and $f$ is $L$-Lipschitz in its state argument over the relevant region. For the same chosen action sequence, let $e_t=\|\hat s_t-s_t\|$. Then
+\begin{align}
+e_{t+1}&\le\varepsilon+Le_t,\\
+e_H&\le\varepsilon\sum_{j=0}^{H-1}L^j\quad(e_0=0).
+\end{align}
+These are conditional bounds, not universal statements about learned neural dynamics. Error can feed future predictions inputs that were rare in the training set. An optimizer may also exploit systematic model errors: it maximizes $\hat J(A)$, not necessarily the true return $J(A)$. More thorough planning can raise predicted return and still lower real return.
+
+\section{Decision-Time Planning: MPC versus CEM}
+For a horizon $H$, plan an action sequence $A=(a_t,\ldots,a_{t+H-1})$ using the model:
+\begin{align}
+\hat s_t&=s_t,\quad
+\hat s_{t+k+1}=f_\psi(\hat s_{t+k},a_{t+k}),\\
+\hat J(s_t,A)&=\sum_{k=0}^{H-1}\gamma^k
+\hat r(\hat s_{t+k},a_{t+k}),\\
+A^*&\in\arg\max_A\hat J(s_t,A).
+\end{align}
+\textbf{MPC} is a receding-horizon \emph{control framework}: plan $H$ steps, execute only the first action, observe the next real state, and replan. \textbf{CEM} is one possible \emph{optimizer} inside the planner; MPC can instead use random shooting or gradient-based optimization, and CEM can optimize objectives outside MPC.
+
+\subsection{Cross-Entropy Method Action-Sequence Search}
+For $d_a$ action dimensions and horizon $H$, CEM fits a sampling distribution over $A\in\R^{H\times d_a}$. In the independent Gaussian variant, sample $N$ candidate action sequences from $q_\eta(A)$, score each through model rollouts, keep the top $K$ elites $\mathcal E$, and refit:
+\begin{align}
+\mu_{\mathrm{new}}&=\frac1K\sum_{j\in\mathcal E}A^{(j)},\\
+\sigma_{\mathrm{new}}^2&=\frac1K\sum_{j\in\mathcal E}
+(A^{(j)}-\mu_{\mathrm{new}})^2.
+\end{align}
+Clipping to action bounds, smoothing distribution updates, and imposing minimum variances are possible implementation choices. CEM is derivative-free and does not train the dynamics network during its iterations.
+\begin{verbatim}
+def cem_plan(s, dynamics, reward_model):
+    mean, std = init_action_sequence_gaussian()
+    for iteration in range(n_cem_iterations):
+        sequences = sample_gaussian(mean, std, n_candidates)
+        returns = simulate_and_score(s, sequences, dynamics, reward_model)
+        elites = sequences[topk(returns, n_elite)]
+        mean, std = elites.mean(axis=0), elites.std(axis=0)
+    return mean[0]   # one possible final-action choice
+\end{verbatim}
+This represents the inner planner; the outer MPC loop executes one action and replans.
+
+\subsection{CEM Numerical Check}
+Let the two best action sequences be $(0.8,0.6)$ and $(0.4,1.0)$. The fitted mean is $(0.6,0.8)$, the elementwise maximum-likelihood variance is $(0.04,0.04)$, and the \emph{standard deviation} is $(0.2,0.2)$. The variance and standard deviation must not be confused. With 1000 candidates and 20 CEM iterations there are 20,000 candidate sequences sampled per planning call, under the assumed constant sampling count; MPC then executes one real action.
+
+\section{Uncertainty and Probabilistic Dynamics Ensembles}
+For multiple dynamics models $\hat f_{\psi_1},\ldots,\hat f_{\psi_M}$, differences in predicted conditional means can indicate \emph{epistemic} (knowledge) uncertainty. Predicted within-model stochastic variance can represent \emph{aleatoric} (irreducible outcome) uncertainty. In a Gaussian mixture approximation, total predictive variance separates into expected within-model variance plus variance of model means:
+\begin{equation}
+\mathrm{Var}(s'\mid s,a)\approx
+\underbrace{\frac1M\sum_{i=1}^M\Sigma_i(s,a)}_{\text{within model}}
++
+\underbrace{\frac1M\sum_{i=1}^M
+(\mu_i(s,a)-\bar\mu)(\mu_i(s,a)-\bar\mu)^\top}_{\text{between models}}.
+\end{equation}
+This decomposition is an ensemble estimate, not a guarantee of perfectly calibrated uncertainty. All models can agree and still be wrong.
+
+\subsection{Mean versus Conservative Planning}
+For candidate sequence $A$, suppose the ensemble predicts returns $J_i(A)$. One score uses $\bar J(A)=\frac1M\sum_iJ_i(A)$. A conservative alternative is
+\begin{equation}
+J_{\mathrm{pess}}(A)=\bar J(A)-\beta\sigma_J(A),
+\end{equation}
+where $\sigma_J$ is the standard deviation of predicted returns. This is an \emph{optional} risk-sensitive heuristic, not an assertion that every ensemble method or PETS uses this penalty. Better optimization of an incorrect model can produce \emph{model exploitation}.
+
+\section{PETS: Probabilistic Ensembles with Trajectory Sampling}
+PETS combines probabilistic dynamics ensembles, sampling-based propagation of candidate trajectories, and MPC planning with an optimizer such as CEM. Each model can predict Gaussian distributions over next-state changes and is trained by likelihood on real transitions. For a fixed candidate action sequence, use multiple particles $p$:
+\begin{equation}
+s_{k+1}^{(p)}\sim
+\hat P_{\psi_{b(p,k)}}(\cdot\mid s_k^{(p)},a_k).
+\end{equation}
+Score a candidate by average simulated return across particles. Model assignments can be resampled at each step (TS1), or fixed along an entire particle trajectory (TS-infinity). Fixing model identity does \emph{not} remove within-model transition randomness. These exact named trajectory-sampling schemes are supplementary PETS paper details beyond the lecture overview.
+\begin{pitfall}
+There are two distinct probability distributions: $\hat P_{\psi_i}(s'\mid s,a)$ is learned using real transitions and gradient descent; $q_\eta(A)$ is CEM's action-sequence sampling distribution, refit using elites. Running CEM does not automatically optimize $\psi_i$.
+\end{pitfall}
+
+\section{Background Planning: Dyna and Dyna-Q}
+Dyna integrates real experience, model learning, and model-generated \emph{planning updates}. Classical tabular Dyna-Q keeps both a Q table and a model table $\mathcal M(s,a)$.
+After a real transition $(s,a,r,s',d)$:
+\begin{enumerate}
+\item Use it to update $Q(s,a)$ with one-step Q-learning:
+\begin{equation}
+Q(s,a)\leftarrow Q(s,a)+\eta
+[r+\gamma(1-d)\max_bQ(s',b)-Q(s,a)].
+\end{equation}
+\item Update the model table with the observed reward, successor, and termination information.
+\item Repeat $n_{\mathrm{plan}}$ times: select a previously seen $(\tilde s,\tilde a)$, ask the model for $(\tilde r,\tilde s',\tilde d)$, and perform the \emph{same} Q-learning update on this simulated transition.
+\end{enumerate}
+In deterministic tabular Dyna, model storage can simply remember the latest observed transition. It need not use neural gradient descent. In that special setting model-based updates can coincide numerically with replaying historical transitions; more expressive stochastic or generalizing models make the distinction stronger.
+\begin{verbatim}
+for real_step in environment:
+    a = epsilon_greedy(Q, s)
+    s_next, r, terminated = env.step(a)
+    q_update(Q, s, a, r, s_next, terminated)
+    model[(s, a)] = (r, s_next, terminated)
+    for _ in range(n_planning):
+        s_sim, a_sim = sample_seen_pair(model)
+        r_sim, next_sim, done_sim = model[(s_sim, a_sim)]
+        q_update(Q, s_sim, a_sim, r_sim, next_sim, done_sim)
+    s = s_next
+\end{verbatim}
+A planning update here means an extra simulated Bellman update, \emph{not} necessarily CEM action-sequence optimization. Simulated errors can bias values.
+
+\subsection{Dyna Numerical Example}
+Consider $s_0\xrightarrow{r=1}s_1\xrightarrow{r=5}\mathrm{terminal}$ with one action per state, $\gamma=0.9$, learning rate $1$, and zero initial Q. Two real interactions yield $Q(s_0)=1$ and $Q(s_1)=5$. A later model-based update of $(s_0,a_0)$ changes $Q(s_0)=1+0.9(5)=5.5$ \emph{without a third real interaction}. The benefit is extra computational learning from known experience, not newly observed reward.
+
+\section{MBPO: Short Model Rollouts to Train SAC}
+Model-Based Policy Optimization (MBPO) trains a dynamics ensemble on real data $\D_{\mathrm{real}}$, starts short model rollouts at states drawn from real replay, acts within the learned model using the current SAC policy, and stores simulated transitions in $\D_{\mathrm{model}}$. SAC minibatches mix real and model transitions.
+\begin{align}
+s_0&\sim\D_{\mathrm{real}},\quad
+a_k\sim\pi_\theta(\cdot\mid s_k),\quad
+\hat s_{k+1}\sim\hat P_\psi(\cdot\mid s_k,a_k),\\
+\D_{\mathrm{SAC}}&=\text{minibatches from }
+\D_{\mathrm{real}}\text{ and }\D_{\mathrm{model}}.
+\end{align}
+Using a mixed sample $(s,a,r,s',d)$, the ordinary one-step SAC target remains:
+\begin{equation}
+y_{\mathrm{SAC}}=
+r+\gamma(1-d)\left[
+\min_iQ_{\bar\phi_i}(s',a')
+-\alpha\log\pi_\theta(a'\mid s')\right],
+\quad a'\sim\pi_\theta(\cdot\mid s').
+\end{equation}
+Critic prediction uses the \emph{stored} current action $a$. Actor training samples a \emph{new} reparameterized action at the sampled replay state. Synthetic transitions are data, not action labels for imitation.
+\begin{verbatim}
+# Train dynamics on real data, not on its own synthetic labels.
+dynamics_loss = nll(dynamics, real_transitions)
+# Periodically generate short model rollouts, without gradients.
+with torch.no_grad():
+    model_transitions = rollout(actor, dynamics, real_start_states, k)
+model_buffer.extend(model_transitions)
+# SAC then uses mixed real+synthetic batches.
+mixed = concat(real_buffer.sample(n_real),
+               model_buffer.sample(n_model))
+critic_step = standard_sac_critic_update(mixed)
+actor_step  = standard_sac_actor_update(mixed.states)
+\end{verbatim}
+A short rollout reduces compounding model error; its optimal horizon is task- and model-dependent. More simulated data is not equivalent to more independent real information. The dynamics model is optimized by its own supervised loss, not normally by the SAC actor loss.
+
+\section{MVE: Model-Based Value Expansion}
+Model-Based Value Expansion (MVE) instead changes the \emph{value target}. Start with real $(s_t,a_t,r_t,s_{t+1})$, simulate additional rewards and transitions using the dynamics model and a chosen policy, then bootstrap at the predicted horizon:
+\begin{equation}
+y_t^{(H)}=
+r_t+\sum_{k=1}^{H-1}\gamma^k\hat r_{t+k}
++\gamma^HV_{\mathrm{target}}(\hat s_{t+H}).
+\end{equation}
+A Q critic trains on the original $(s_t,a_t)$ via
+\begin{equation}
+L_Q(\phi)=\E[(Q_\phi(s_t,a_t)-\operatorname{stopgrad}(y_t^{(H)}))^2].
+\end{equation}
+For $\gamma=0.8$, rewards $(3,2,4)$ (first observed, later two modeled) and terminal predicted value $10$, the target is
+$3+0.8(2)+0.8^2(4)+0.8^3(10)=12.28$.
+If combined with SAC, the appropriate soft entropy terms must also be included consistently. MVE reduces dependence on an early value bootstrap but adds model error; it is not guaranteed to reduce total bias.
+\begin{pitfall}
+MVE and MBPO are different design choices: MVE changes how a label is constructed; MBPO changes which transitions are available for training. Both can coexist. In standard MVE critic regression, stop-gradient prevents the critic loss from training the dynamics model or the actor that generated the rollout.
+\end{pitfall}
+
+\section{Terminal Value Functions and Planner Distillation}
+A finite-horizon planner can be myopic. Adding a learned terminal value estimates return beyond its search horizon:
+\begin{equation}
+\hat J_H(s,A)=
+\sum_{k=0}^{H-1}\gamma^k\hat r(\hat s_k,a_k)
++\gamma^HV_\phi(\hat s_H).
+\end{equation}
+This expression resembles an MVE target but serves a different purpose: terminal value is used to \emph{rank action sequences}, while MVE uses a similar expression as a \emph{critic regression label}. With $H=3,\gamma=0.9$, immediate three-step score $2$ and terminal value $20$ give $2+0.9^3(20)=16.58$, better than a score $8$ with zero terminal value, if those predictions are reliable.
+
+A planner can supervise a fast actor using $(s,a^*_{\mathrm{planner}})$ pairs:
+\begin{equation}
+L_{\mathrm{distill}}(\theta)=
+\E_s\|\mu_\theta(s)-a^*_{\mathrm{planner}}(s)\|_2^2.
+\end{equation}
+This is a simple deterministic imitation-style example. Planning labels can be refreshed on states visited by the learned actor, connecting to dataset aggregation and DAgger. Planning may also be used for policy initialization, improvement, or target generation.
+
+\section{Differentiable Dynamics and Policy Backpropagation}
+When dynamics and rewards are differentiable, an actor can receive gradients directly through simulated transitions. For a fixed state $s$:
+\begin{equation}
+a=\mu_\theta(s),\qquad s'=f_\psi(s,a),\qquad
+J(\theta)=R_\omega(s').
+\end{equation}
+By the chain rule:
+\begin{equation}
+\frac{dJ}{d\theta}
+=
+\frac{\partial R_\omega}{\partial s'}
+\frac{\partial f_\psi}{\partial a}
+\frac{\partial\mu_\theta}{\partial\theta}.
+\end{equation}
+For multi-step rollouts, derivatives also propagate through each intermediate state and actor application (backpropagation through time). Long Jacobian products can vanish or explode, and the gradient follows the learned model, which can be biased.
+\begin{verbatim}
+for p in dynamics.parameters():
+    p.requires_grad_(False)  # freeze model weights
+s = initial_state
+return_pred = 0
+for k in range(horizon):
+    a = actor(s)
+    next_s = dynamics(s, a)  # NO no_grad(), NO detach()
+    return_pred += (gamma**k) * reward_fn(next_s)
+    s = next_s
+actor_loss = -return_pred.mean()
+actor_optimizer.zero_grad()
+actor_loss.backward()
+actor_optimizer.step()
+\end{verbatim}
+Freezing dynamics parameters does \emph{not} stop gradients through its action input. By contrast, wrapping the dynamics call in \texttt{torch.no\_grad()} severs the actor's gradient path. This differs from MBPO's data generation and MVE's detached target computation.
+
+\subsection{Policy Backprop Numerical Example}
+Set $a=\theta s$, $s'=2s+a$, $R(s')=-(s'-10)^2$, $s=2$, $\theta=1$. Then $a=2$, $s'=6$ and
+\begin{equation}
+\frac{dJ}{d\theta}
+=\underbrace{-2(6-10)}_{8}
+\underbrace{\frac{\partial(2s+a)}{\partial a}}_{1}
+\underbrace{\frac{\partial(\theta s)}{\partial\theta}}_{2}
+=16.
+\end{equation}
+With gradient-ascent step size $0.1$, $\theta_{\mathrm{new}}=1+0.1(16)=2.6$. The model parameters can remain frozen throughout.
+
+\section{Data, Targets, and Gradient Summary}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}lXX@{}}\toprule
+Method & Main model use & Updated parameters\\\midrule
+PETS + MPC/CEM & Evaluate candidate trajectories, choose first action & Dynamics by real-data NLL at model training time; CEM sampling moments by elites during planning\\
+Dyna-Q & Generate extra transitions for Bellman updates & Q table by real and simulated TD; model table from observed transitions\\
+MBPO + SAC & Generate short replay trajectories & Dynamics on real data; SAC actor/critics on mixed replay via their standard losses\\
+MVE & Construct multi-step critic labels & Online critic for the detached value loss\\
+Planner distillation & Provide supervised action labels & Student policy by supervised gradient descent\\
+Policy backprop & Differentiate predicted reward through dynamics & Actor gradients through model inputs; model parameters can remain frozen\\\bottomrule
+\end{tabularx}
+\end{center}
+For all implementations distinguish actual observed states from synthetic states, the online Q predictor from no-gradient target branches, and model fitting from planning optimization.
+
+\section{Boundary Conditions and Limitations}
+\begin{itemize}
+\item A time-limit truncation is not necessarily a terminal MDP state; use the proper final observation and bootstrap mask.
+\item Reward and termination mechanisms must be modeled or otherwise computed for synthetic transitions.
+\item Planning and training can exploit shared systematic model errors even when ensemble variance is small.
+\item Decision-time planning can be computationally intensive; distilled policies trade planning computation for additional training and approximation.
+\item Sample efficiency does not imply low wall-clock computation or universal final-return superiority.
+\end{itemize}
+
+\section{Further Reading: Topics Named in Lectures 7--8}
+The course planning landscape also names model-predictive path integral and other shooting techniques, gradient-based trajectory optimization, direct collocation, MCTS, implicit planning, stochastic value gradients, and Dreamer-style approaches. We have \emph{not} completed paper-level derivations or implementations of all these methods; they are useful topics for later expansion. Their appearance here does not mark them as mastered.
+
+\section{Final Review Questions}
+\begin{enumerate}
+\item How is MPC different from CEM? Why does MPC execute only one of the optimized actions?
+\item Which Gaussian in PETS is fitted with transition NLL, and which is refit with elite sequences?
+\item How do TS1 and TS-infinity propagate model uncertainty differently?
+\item Why can longer planning or model rollouts make performance worse?
+\item Explain how Dyna-Q obtains a better Q estimate without additional real transitions.
+\item Why is classical deterministic tabular Dyna sometimes equivalent to experience replay?
+\item Compare MBPO and MVE by \emph{training data source} versus \emph{value target}.
+\item Why does MBPO actor optimization use a newly sampled actor action rather than imitate a stored model-buffer action?
+\item Explain the difference between Terminal Value Planning and MVE label construction.
+\item In model-based policy backpropagation, why must the dynamics call remain differentiable even if model weights are frozen?
+\item CEM elites $(0.8,0.6)$ and $(0.4,1.0)$: compute fitted mean, variance, and standard deviation.
+\item For $a=\theta s$, $s'=2s+a$, $R(s')=-(s'-10)^2$, $s=2$, $\theta=1$, compute $dJ/d\theta$ and the new $\theta$ after an ascent step of $0.1$.
+\end{enumerate}
+\section{Study Status and Source Notes}
+First guided pass and three-module review completed October 13, 2026: algorithm recognition, data/gradient flow, and numerical derivations. The review corrected a variance-versus-standard-deviation confusion and verified the later MVE target calculation and one-step chain rule. Based primarily on the supplied Georgia Tech CS 8803 Fall 2026 Lectures 7--8. Dyna-Q implementation details, PETS-specific TS1/TS-infinity, explicit SAC/MBPO tensor flow, and worked numbers are guided-study expansions; not a verbatim lecture transcription. For original-paper follow-up: Sutton (1990), Chua et al.\ (2018), Janner et al.\ (2019).
