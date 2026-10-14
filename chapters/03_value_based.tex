@@ -191,6 +191,47 @@ divergence. Replay, target networks, and Double DQN improve practical
 learning but do not provide general convergence guarantees for
 nonlinear neural Q-learning. Exploration and data coverage also matter.
 
+\section{Additional Connections: SARSA, Target Learning, and Data Coverage}
+\subsection{SARSA versus Q-Learning}
+The difference is the action used to evaluate the \emph{next} state. SARSA uses an action sampled from the current behavior policy:
+\begin{equation}
+y_{\mathrm{SARSA}}=r+\gamma(1-d)Q(s',a'_{\mathrm{sampled}}).
+\end{equation}
+Q-learning instead uses a greedy next action:
+\begin{equation}
+y_{\mathrm{QL}}=r+\gamma(1-d)\max_{a'}Q(s',a').
+\end{equation}
+For $r=1$, $\gamma=0.9$, and next Q-values $(2,5)$, when exploration chooses the first action, the SARSA target is $2.8$ but the Q-learning target is $5.5$. Both may use epsilon-greedy exploration, but the Q-learning target still follows greedy values. This explains the difference between typical on-policy SARSA and off-policy Q-learning.
+
+\subsection{Why Neural TD Regression Is Not Ordinary Supervised Learning}
+The DQN label is partly model-generated:
+\begin{equation}
+y_i(\bar\theta)=r_i+\gamma(1-d_i)\max_{a'}Q_{\bar\theta}(s'_i,a').
+\end{equation}
+It can change when target parameters change, even for the same stored transition. Treating the target as detached gives a semi-gradient:
+\begin{equation}
+\nabla_\theta L_Q=\frac{2}{B}\sum_i
+(Q_\theta(s_i,a_i)-y_i)\nabla_\theta Q_\theta(s_i,a_i).
+\end{equation}
+Stop-gradient freezes the target within this update; the separate target network slows its movement across updates. Replay reduces temporal correlation and reuses data, but cannot create coverage of unseen state-action regions.
+
+\subsection{Replay Distribution and the Data-Coverage Problem}
+Replay minibatches sample from the empirical distribution of past behavior policies, not necessarily the current greedy policy's state distribution. A Bellman target can be computed off-policy, but value estimates can be unreliable where data are scarce, especially with nonlinear function approximation and bootstrapping. This issue also matters in continuous-action and offline RL.
+
+\subsection{Tensor and Gradient Checklist}
+For $B$ examples and $n_a$ discrete actions:
+\begin{itemize}
+\item The online forward pass returns $[B,n_a]$.
+\item Gather by \emph{stored current actions} to obtain $[B,1]$ predictions.
+\item The target network computes next-state values of shape $[B,n_a]$.
+\item The next-state max (or Double DQN's selected target value) has shape $[B,1]$.
+\item Keep rewards and termination masks as $[B,1]$ to avoid accidental broadcasting.
+\item Only the online network receives the Q-regression gradient; target parameters are copied or softly updated separately.
+\end{itemize}
+\begin{pitfall}
+The stored action identifies the Q prediction paired with the observed reward. The next-state greedy action determines the bootstrap target. These actions have different roles.
+\end{pitfall}
+
 \section{Review Questions}
 \begin{enumerate}
 \item Why can a Q-function directly rank actions while a state value alone cannot?
