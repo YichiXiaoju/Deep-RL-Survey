@@ -1,0 +1,114 @@
+\chapter{Beyond Policy Gradients: First-Order RL and World Models}
+\label{ch:beyond_pg}
+\noindent\textit{Lecture-aligned study notes: CS 8803 Lecture 9 (Fall 2026).}
+
+\section{Stochastic Optimization}
+The full RL objective is $J(\theta)=\mathbb{E}_{\tau\sim p_\theta}[\sum_{t=1}^T\gamma^{t-1}r(s_t,a_t)]$. The lecture initially considers a one-action projectile problem. The flight may last two seconds, but the decision horizon is one. Contact with a wall makes the deterministic reward non-smooth. Randomizing the action smooths the expected objective.
+
+For example, $r(a)=10\mathbf{1}\{a\geq5\}$, $a\sim\mathcal N(\theta,\sigma^2)$ gives
+\[
+J(\theta)=10\Phi((\theta-5)/\sigma),\qquad
+J'(\theta)=10\varphi((\theta-5)/\sigma)/\sigma.
+\]
+The raw step function has no informative slope below five, but the randomized objective has a positive slope when $\sigma>0$. This is not a guarantee of global optimization.
+
+\section{Score Function Versus First-Order Gradients}
+REINFORCE follows the log-derivative identity:
+\[
+\nabla_\theta J=\mathbb E_{a\sim\pi_\theta}
+[r(a)\nabla_\theta\log\pi_\theta(a)].
+\]
+It requires sampling rewards but no derivative of reward or environment. For a fixed-variance Gaussian $\mathcal N(\theta,\sigma^2)$ the sampled gradient is $r(a)(a-\theta)/\sigma^2$.
+
+\paragraph{Multi-step distinction.}
+The single-reward formula only applies to the one-step example. For the start-state discounted objective, the multi-step gradient uses future reward:
+\[
+\nabla_\theta J=\mathbb E\left[
+\sum_{t=1}^{T}\nabla_\theta\log\pi_\theta(a_t|s_t)
+\sum_{k=t}^{T}\gamma^{k-1}r_k\right].
+\]
+Equivalently the relative reward-to-go $G_t=\sum_{k=t}^{T}\gamma^{k-t}r_k$ has an outer discount factor $\gamma^{t-1}$. Baselines independent of sampled action can reduce variance.
+
+\paragraph{Pathwise/FOG.}
+Reparameterize as $a=g_\theta(\epsilon)$ with parameter-independent noise. If the reward-action path is differentiable,
+\[
+\nabla_\theta J=\mathbb E_\epsilon[
+(\partial r/\partial a)(\partial g_\theta/\partial\theta)].
+\]
+For $a=\theta+\sigma\epsilon$ with fixed $\sigma$, $\partial a/\partial\theta=1$.
+
+\paragraph{Illustrative comparison.}
+Take $r(a)=-(a-5)^2$, $a\sim\mathcal N(\theta,1)$, $\theta=3$ and sample $a=4$. Then
+\[
+\hat g_{\mathrm{PG}}=-1,\quad
+\hat g_{\mathrm{FOG}}=+2,\quad
+\nabla_\theta J(3)=+4.
+\]
+They disagree on one sample yet agree in expectation. In this example, their variances are $74$ and $4$ respectively. This does not imply universally lower FOG variance, especially with contact and nonsmoothness.
+
+\begin{pitfall}
+The reward need not be differentiable for REINFORCE. The gradient is of the log policy, multiplied by the observed return. FOG instead differentiates a computational path from reward back to policy parameters.
+\end{pitfall}
+
+\section{BPTT Through Dynamics}
+For $a_t=\pi_\theta(s_t)$, $s_{t+1}=f(s_t,a_t)$ and final reward $r(s_{t+1})$, a simple chain is
+\[
+\frac{dJ}{d\theta}
+=\frac{\partial r}{\partial s_{t+1}}
+\frac{\partial f}{\partial a_t}
+\frac{\partial \pi_\theta}{\partial\theta}.
+\]
+For $s_1=0$, $a_1=\theta$, $s_2=2a_1$ and $r=-(s_2-10)^2$, at $\theta=3$ the gradient is $16$, encouraging increased action. Across a long horizon, BPTT multiplies dynamics Jacobians, giving vanishing/exploding gradients; contact makes first-order gradients particularly challenging. The lecture reports a Cartpole training-time illustration but not a universal runtime advantage.
+
+\section{SHAC: Short-Horizon Actor-Critic}
+SHAC (Xu et al., 2022, lecture slides 30--40) avoids differentiating a full, long trajectory. Use a short differentiable rollout and a terminal critic estimate:
+\[
+J_{\mathrm{SHAC}}(\theta)=\mathbb E[
+\sum_{t=1}^{H}\gamma^{t-1}r(s_t,a_t)
++\gamma^H V_\psi(s_{H+1})].
+\]
+The slides use a shifted-index undiscounted equivalent. Actor parameters are updated through short simulated dynamics and terminal \emph{state}; critic weights remain fixed during actor backpropagation. Critic learning uses model-free TD($\lambda$), based on bootstrapped targets
+\[
+R_t^{(k)}=\sum_{j=0}^{k-1}\gamma^j r_{t+j}
++\gamma^k V_{\bar\psi}(s_{t+k}).
+\]
+Detaching the terminal value removes the long-horizon actor gradient, but \emph{does not} remove gradients from short-horizon rewards. SHAC mitigates long gradient chains but requires differentiable simulation and faces sim-to-real mismatch.
+
+\section{World Models and PWM}
+Instead of engineering a simulator, learn a differentiable surrogate in latent space:
+\[
+z_t=\operatorname{enc}_\phi(o_t),\quad
+\hat z_{t+1}=f_\phi(z_t,a_t),\quad
+\hat r_t=r_\phi(z_t,a_t),\quad
+a_t\sim\pi_\theta(\cdot|z_t).
+\]
+The lecture uses an illustrative 512-dimensional latent. PWM (Policy Learning with Multi-task World Models) is presented as \emph{world model + SHAC}, with additional engineering. First learn a multi-task, multi-embodiment surrogate from offline data, then optimize per-task actors with short modeled rollouts and terminal values.
+
+The lecture's schematic world-model objective is a weighted sum of latent transition error and reward prediction cross-entropy:
+\[
+\mathcal L_{\mathrm{WM}}=\mathbb E[
+\sum_{t=0}^H\gamma^t(
+\|\hat z_{t+1}-\operatorname{sg}(\operatorname{enc}(o_{t+1}))\|_2^2
++\operatorname{CE}(r_t,\hat r_t))].
+\]
+Here $\operatorname{sg}$ stops gradient; reward cross-entropy presumes a compatible prediction representation.
+
+\paragraph{Smoothness is not fidelity.}
+The lecture reports a case where optimization via a smooth surrogate performs better than through ground-truth dynamics. This is a specific empirical comparison, not universal superiority. A biased learned model can lead to a wrong action. If real $s'=s+a$, learned $\hat s'=s+2a$, and reward is $-(s'-10)^2$ at $s=0$, the model favors $a=5$ but reality favors $a=10$.
+
+\section{Practical Comparison and Review}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.18\textwidth}X X@{}}\toprule
+Method & Gradient source & Important drawback\\\midrule
+REINFORCE & Return-weighted score & Sampling variance\\
+FOG & Differentiable action-reward path & Requires usable derivatives\\
+BPTT & Full rollout derivatives & Long-horizon instability and contact\\
+SHAC & Short simulated path + critic & Simulator cost, sim-to-real gap\\
+PWM & Short learned path + critic & Data/training cost, model bias\\\bottomrule
+\end{tabularx}
+\end{center}
+If a fast trustworthy simulator exists, SHAC avoids world-model fitting; if simulation is challenging but abundant offline data are available, PWM may be appealing. Neither method is unconditionally cheaper or more stable.
+
+\paragraph{Review questions.} Why does multi-step REINFORCE use return-to-go? Why can two unbiased estimators have opposite sample gradients? What actor gradient remains when SHAC terminal value is detached? Can a smooth world model produce a systematically wrong policy?
+
+\paragraph{References and scope.} Source: CS 8803 Lecture 9 (Fall 2026). Lecture references include Mohamed et al., \emph{Monte Carlo Gradient Estimation in Machine Learning} (2020); Xu et al., \emph{Accelerated Policy Learning with Parallel Differentiable Simulation} (2022); Suh et al., \emph{Do Differentiable Simulators Give Better Policy Gradients?} (2022). First-pass lecture notes, not a paper reproduction.
