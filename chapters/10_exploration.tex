@@ -1,0 +1,148 @@
+\chapter{Exploration in Deep Reinforcement Learning}
+\label{ch:exploration}
+\noindent\textit{Lecture-aligned study notes: CS 8803 Lecture 10 (Fall 2026).}
+
+\section{Why Exploration Matters}
+An agent must trade off exploiting actions that currently look good against learning about uncertain actions. Sparse rewards and long action sequences make naively random actions inefficient. In a stochastic multi-armed bandit, the expected cumulative regret is
+\[
+\operatorname{Reg}(T)=\sum_{t=1}^{T}(\mu^\star-\mu_{a_t}),
+\]
+where $\mu^\star$ is the highest true arm mean. Exploration can incur short-term regret while improving later decisions. In sequential RL the key additional issue is \emph{deep exploration}: reaching a useful state may require a coherent sequence of actions before any external reward appears.
+
+The lecture organizes strategies broadly into optimistic exploration, posterior sampling, and information gain. Several deep-RL methods produce novelty bonuses rather than rigorous upper confidence bounds; these classifications are conceptual, not mathematical equivalences.
+
+\section{Bandit Foundations: UCB, Thompson Sampling, and Information Gain}
+\paragraph{Optimism through UCB.}
+A common UCB rule for bounded stochastic rewards is
+\[
+a_t=\arg\max_a\left[\hat\mu_t(a)+\sqrt{\frac{2\log t}{N_t(a)}}\right].
+\]
+The empirical mean exploits knowledge; the bonus prefers arms with few observations. For example, at $t=100$, an arm with $\hat\mu=0.70,N=80$ has score about $1.039$, while an arm with $\hat\mu=0.55,N=5$ has score about $1.907$. The low-count arm is explored despite its lower mean. These values are illustrative scores, not probabilities.
+
+\paragraph{Thompson sampling.}
+Maintain a posterior over unknown arm parameters, sample a possible set of values $\tilde\mu_a$ from that posterior, then select $\arg\max_a\tilde\mu_a$. For Bernoulli rewards, a Beta prior is conjugate: $\operatorname{Beta}(\alpha,\beta)$ becomes $\operatorname{Beta}(\alpha+n_{\rm success},\beta+n_{\rm failure})$. A lower-mean but uncertain arm can occasionally win under a posterior draw. Unlike UCB, Thompson sampling does not simply add a fixed bonus to an estimated mean.
+
+\paragraph{Information gain and IDS.}
+A candidate action can be evaluated for expected reduction in uncertainty about an unknown variable $\Theta$:
+\[
+I(\Theta;Y\mid D,a)=H(\Theta\mid D)
+-\mathbb E_{Y\mid D,a}[H(\Theta\mid D,a,Y)].
+\]
+Equivalently, this equals the expected posterior-to-prior KL divergence. Information-directed sampling (IDS) balances expected regret against information gain, rather than blindly maximizing entropy reduction. Information unrelated to good decisions can be less valuable.
+
+\paragraph{Small entropy example.}
+Let an unknown Bernoulli success rate belong to $\{0.2,0.8\}$ with equal prior probability. Prior entropy is one bit. After one success the posterior is $(0.2,0.8)$; after one failure it is $(0.8,0.2)$. Both have binary entropy $H_2(0.2)\approx0.722$, giving expected information gain $1-0.722\approx0.278$ bits.
+
+\section{Count-Based Exploration in Large State Spaces}
+Simple count bonuses include
+\[
+r_{\rm int}(s)=\frac{\beta}{\sqrt{N(s)}}.
+\]
+An exact count is useful in small discrete spaces, but near-identical observations in continuous or pixel-based environments may each have count one. Thus direct tabulation fails to generalize across similar states.
+
+\subsection{Density Models and Pseudo-Counts}
+Bellemare et al.\ motivate a generalized count from how an online density model changes when it sees state $s$. Let $\rho_n(s)$ be its probability estimate before an update, and $\rho'_n(s)$ its probability after updating once on $s$. Define equivalent counts by
+\[
+\rho_n(s)=\frac{\hat N_n(s)}{\hat n},\qquad
+\rho'_n(s)=\frac{\hat N_n(s)+1}{\hat n+1}.
+\]
+Solving for the pseudo-count gives
+\[
+\boxed{\hat N_n(s)=
+\frac{\rho_n(s)[1-\rho'_n(s)]}{\rho'_n(s)-\rho_n(s)}}.
+\]
+For $\rho_n=0.10$ and $\rho'_n=0.20$, $\hat N_n=0.8$. For $\rho_n=0.10$ and $\rho'_n=0.101$, $\hat N_n=89.9$. A density estimate that changes little after observing a state corresponds to a larger effective count. The formula requires appropriate learning-positive behavior ($\rho'_n(s)>\rho_n(s)$) and compatible probability assumptions; arbitrary density updates may give invalid values.
+
+An exploration bonus can replace $N(s)$ with a regularized $\hat N(s)$, e.g.\ $r_{\rm int}\propto1/\sqrt{\hat N(s)}$. The slides mention density estimators such as Context Tree Switching (CTS). Generating visually convincing samples is not required: the model is used for probability estimates and their learning response.
+
+\subsection{Hash-Based Counting}
+Tang et al., \emph{\#Exploration}, map high-dimensional states into compact codes $h(s)\in\{0,1\}^k$ and count $N(h(s))$. The bonus may be proportional to $1/\sqrt{N(h(s))}$. Compression permits related observations to share a count, but code collisions can merge states with important different consequences. Learned compression may help, but it must preserve decision-relevant structure.
+
+\section{Novelty Estimation: EX2, RND, and Model Prediction Error}
+\subsection{EX2: Exemplar Classifiers}
+EX2 (Fu et al.) asks whether a new exemplar state $s^\star$ is distinguishable from past observations. Train a classifier that treats the exemplar as positive and the historical state distribution as negative. With balanced class priors and a point-mass positive distribution in a discrete idealization, its optimal output at the exemplar satisfies
+\[
+D^\star_{s^\star}(s^\star)=\frac{1}{1+p_D(s^\star)},
+\qquad
+p_D(s^\star)=\frac{1-D^\star_{s^\star}(s^\star)}{D^\star_{s^\star}(s^\star)}.
+\]
+This yields a classifier-based density or novelty signal. Without suitable regularization, a high-capacity classifier may memorize pixel-level details and mark familiar states as novel. An amortized exemplar model shares computation instead of fitting an entirely new classifier from scratch for every observation.
+
+\subsection{Random Network Distillation (RND)}
+RND (Burda et al.) uses a fixed randomly initialized target network $f_{\bar\phi}(s)$ and a trainable predictor $g_\theta(s)$. Train only the predictor using
+\[
+\mathcal L_{\rm RND}(\theta)=
+\mathbb E_{s\sim D}\|g_\theta(s)-f_{\bar\phi}(s)\|_2^2,
+\quad
+r_{\rm int}(s)=\|g_\theta(s)-f_{\bar\phi}(s)\|_2^2.
+\]
+Repeated training exposure often reduces error on familiar states; unfamiliar states may retain larger error. This is \emph{not} a visitation count or calibrated Bayesian uncertainty. Generalization, observation noise, and learning dynamics matter. In an RL pipeline the predictor learns its auxiliary regression task while the policy is updated using external and intrinsic rewards (possibly with separate normalization or value estimation).
+
+\subsection{Prediction Error from Learned Dynamics}
+The lecture also describes exploration bonuses from dynamics prediction errors, such as comparing predicted and observed next-state features:
+\[
+\hat z_{t+1}=f_\phi(z_t,a_t),\qquad
+r_{\rm int}\propto\|\hat z_{t+1}-z_{t+1}\|_2^2.
+\]
+This differs from RND: RND predicts a frozen random feature mapping of a state; a dynamics predictor predicts an actual next-state representation. High prediction error can be driven by irreducible environmental randomness (the noisy-TV issue) instead of knowledge worth acquiring. RND may face related novelty failures but is not itself a next-state dynamics predictor.
+
+\section{Posterior Sampling in Deep RL: Bootstrapped DQN}
+Exact Bayesian sampling of neural-network Q-functions is difficult. Bootstrapped DQN (Osband et al.) approximates diverse plausible Q-functions with $K$ output heads, possibly sharing a representation. Random initialization and bootstrap data masks encourage differences among heads. For head $k$, a masked TD loss has the schematic form
+\[
+\mathcal L_k=
+\sum_i m_i^{(k)}\left[
+Q_k(s_i,a_i)-
+\bigl(r_i+\gamma(1-d_i)\max_{a'}Q_k^{-}(s'_i,a')\bigr)
+\right]^2,\quad m_i^{(k)}\in\{0,1\}.
+\]
+A transition generated by one head may still train other heads, subject to their masks, because DQN is off-policy.
+
+At the start of each episode sample $k\sim\operatorname{Uniform}(\{1,\ldots,K\})$ and keep it fixed during the episode:
+\[
+a_t=\arg\max_a Q_k(s_t,a).
+\]
+This makes exploration \emph{temporally coherent}. A long corridor may require many consistently directed moves; resampling an independent random action or head at every step can produce oscillations. Choosing one head does not guarantee a particular action sequence or that the head is accurate. Bootstrap heads only approximate posterior diversity; they are not samples from a guaranteed exact Bayesian posterior.
+
+\section{Information Gain in Deep RL: VIME}
+VIME (Houthooft et al.) learns a Bayesian dynamics model $p_\theta(s_{t+1}\mid s_t,a_t)$ and rewards transitions that change beliefs about its parameters $\theta$. Given prior data $D$ and observed transition $x=(s_t,a_t,s_{t+1})$, realized information gain is
+\[
+D_{\rm KL}\left(p(\theta\mid D,x)\,\|\,p(\theta\mid D)\right).
+\]
+Expected information gain averages this KL over the possible $s_{t+1}$. Since exact neural-network posteriors are intractable, VIME approximates them by variational distributions, such as a factorized Gaussian
+\[
+q_\phi(\theta)=\prod_{j=1}^{d}\mathcal N(\theta_j;\mu_j,\sigma_j^2),
+\]
+and uses an approximate intrinsic bonus
+\[
+r_{\rm int}(s_t,a_t,s_{t+1})=
+\beta D_{\rm KL}(q_{\phi'}(\theta)\|q_\phi(\theta)).
+\]
+For an illustrative one-dimensional update $q_\phi=\mathcal N(0,1)$ to $q_{\phi'}=\mathcal N(1,1)$, the KL is $0.5$ nats. The model and variational posterior must themselves be fitted from transition data, making VIME more involved than an RND prediction loss.
+
+\begin{pitfall}
+\textbf{Prediction error is not information gain.} A known stochastic transition kernel may have large realized prediction error but almost no posterior update. In principle Bayesian dynamics information gain focuses on uncertainty reducible by data (epistemic uncertainty), whereas irreducible outcome noise (aleatoric uncertainty) need not be informative. The quality of this distinction depends on the dynamics and inference approximations.
+\end{pitfall}
+
+\section{Unified Comparison and Practical Questions}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.18\textwidth}X X@{}}\toprule
+Method & Exploration signal / action rule & Learned component and caveat\\\midrule
+UCB & Mean plus confidence bound & Arm counts and means; bound assumptions\\
+Thompson sampling & Greedy under sampled posterior parameters & Posterior over rewards; sampling quality\\
+Pseudo-count & Bonus based on equivalent density count & Density estimator; learning-positive updates\\
+Hash count & Bonus based on code visits & Hash/compression; collisions\\
+EX2 & Exemplar discriminability & Classifier; memorization\\
+RND & Error predicting frozen random features & Predictor; error is a novelty heuristic\\
+Bootstrapped DQN & One sampled Q-head for an episode & Multiple TD learners; approximate posterior\\
+VIME & Dynamics posterior-change KL & Bayesian dynamics; variational approximation cost\\\bottomrule
+\end{tabularx}
+\end{center}
+
+\paragraph{Intrinsic reward versus policy sampling.}
+Pseudo-counts, hashes, EX2, RND, and VIME can supply bonuses in a shaped reward such as $r_{\rm total}=r_{\rm ext}+\beta r_{\rm int}$. Bootstrapped DQN instead changes the behavior policy by selecting a Q-head and need not change the environment reward. VIME's dynamics model is trained to estimate learning progress: using a model for exploration is not synonymous with planning through it using MPC or CEM.
+
+\paragraph{Review prompts.}
+Why is exact counting ineffective for continuous states? Derive the pseudo-count from before/after density estimates. When can a classifier incorrectly label familiar images as novel? Why is the RND target frozen? Why commit to one Q-head per episode? Explain a case where prediction error is high but VIME information gain is low.
+
+\paragraph{References and scope.}
+Primary source: CS 8803 Lecture 10, \emph{Exploration} (Fall 2026). Lecture-discussed work includes Bellemare et al., \emph{Unifying Count-Based Exploration and Intrinsic Motivation}; Tang et al., \emph{\#Exploration}; Fu et al., \emph{EX2}; Burda et al., \emph{Exploration by Random Network Distillation}; Osband et al., \emph{Deep Exploration via Bootstrapped DQN}; Houthooft et al., \emph{VIME}; and Stadie et al.\ on exploration via learned model error. These notes are an instructional synthesis, not a reproduction of paper experiments.
