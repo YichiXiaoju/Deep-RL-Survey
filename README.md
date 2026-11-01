@@ -1,4 +1,4 @@
-# Deep RL Survey — English Version (v1.0)
+# Deep RL Survey — English Version (v1.1)
 
 Plain English with mathematical LaTeX. Based on CS 8803 Fall 2026 course materials and our guided study.
 
@@ -14,9 +14,10 @@ Upload the complete project ZIP as a new project and preserve the `chapters/` fo
 - [x] Chapter 5 — Model-Based RL: dynamics, MPC/CEM, model error, uncertainty, PETS, Dyna, MBPO, MVE, value-guided planning, policy backprop (first pass and review)
 - [x] Lecture 9 — Beyond Policy Gradients: stochastic optimization, score-function versus pathwise gradients, BPTT, SHAC, PWM (first pass; file `chapters/09_beyond_policy_gradients.tex`)
 - [x] Lecture 10 — Exploration: UCB, Thompson sampling, information gain/IDS, pseudo-counts, hashes, EX2, RND, Bootstrapped DQN, VIME, and comparative review (`chapters/10_exploration.tex`)
-- [ ] Lecture 11 onward — Offline RL and remaining topics / unified comparison
+- [x] Lecture 11 — Offline RL: distribution shift, OPE (IS/DR/marginalized IS), LSTD/LSTDQ/LSPI, BEAR, AWR, IQL, CQL and COMBO (`chapters/11_offline_rl.tex`)
+- [ ] Lecture 12 onward — Remaining topics / unified comparison
 
 ## After each study module
 Explain intuition, architecture, data, training targets, losses, gradient flow, limitations, and links to prior methods. Add short numerical examples and review questions. Mark incomplete parts clearly.
 
-**Updated:** 2026-10-29, v1.0. Added Lecture 10 exploration notes, with intrinsic-reward versus posterior-sampling comparisons, pseudo-count derivation, RND training mechanics, coherent Bootstrapped DQN exploration, and VIME's Bayesian dynamics information gain. The chapter follows Lecture 9 in `main.tex`; existing outline chapters remain in place.
+**Updated:** 2026-10-31, v1.1. Added Lecture 11 offline RL notes with Bellman/TD/LSTD derivations, a two-transition numerical example, policy-support reasoning, OPE estimators, expectile regression and all three IQL losses, CQL regularization, and a BEAR/AWR/IQL/CQL comparison. The new chapter is included in `main.tex`; existing sections are preserved.
