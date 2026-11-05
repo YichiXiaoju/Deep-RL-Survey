@@ -1,0 +1,138 @@
+\chapter{Inverse Reinforcement Learning}
+\label{ch:inverse_rl}
+\noindent\textit{Study module 12. Source: CS 8803 Fall 2026 slide deck titled Lec 16: Learning from Data -- Intro to Inverse RL. The study module number follows our learning sequence, while the supplied deck itself says Lec 16.}
+
+\section{Why Inverse RL?}
+Forward reinforcement learning assumes a reward $r$ and seeks a policy:
+\[
+\pi_r^*\in\arg\max_\pi J_r(\pi),\qquad
+J_r(\pi)=\E_{\tau\sim p_\pi}\left[\sum_{t=0}^{T}\gamma^t r(s_t,a_t)\right].
+\]
+Inverse reinforcement learning (IRL) uses expert demonstrations to infer a reward that explains expert decisions. Behavioral cloning (BC) directly fits $\pi_\theta(a\mid s)$ by supervised learning. An appropriately recovered task reward may allow policy reoptimization under changed dynamics, but transfer is not guaranteed.
+
+\begin{intuition}
+A short and a long robot arm need different motor commands to grasp the same cup. The physical dynamics change, while the high-level goal can remain the same. Recovering that goal rather than copying specific motor actions motivates IRL.
+\end{intuition}
+
+\section{Reward Ambiguity}
+Expert behavior does not identify a unique reward. For any $c>0$, scaling $r'=cr$ scales every policy return and preserves optimal policies. Negative scaling generally reverses preferences. A constant per-step shift preserves rankings in fixed-length episodes, but may not do so with variable termination.
+
+Potential-based reward shaping is a deeper ambiguity:
+\[
+r'(s,a,s')=r(s,a,s')+\gamma\Phi(s')-\Phi(s).
+\]
+For infinite-horizon discounted problems with bounded potential and $0\le\gamma<1$,
+\[
+G'=G+\sum_{t=0}^{\infty}\gamma^t
+[\gamma\Phi(s_{t+1})-\Phi(s_t)]=G-\Phi(s_0).
+\]
+For a fixed initial state, every policy return shifts by the same constant, leaving optimal policies unchanged. Finite horizons require appropriate boundary conditions.
+\begin{pitfall}
+IRL cannot generally recover a unique ground-truth reward, even from optimal demonstrations. It must rely on modeling assumptions and often identifies an equivalence class of rewards.
+\end{pitfall}
+
+\section{Feature Matching and Maximum Margin}
+Assume a linear reward $r_\psi(s,a)=\psi^\top f(s,a)$ using a chosen feature representation. Define discounted expected features
+\[
+\mu(\pi)=\E_\pi\left[\sum_t\gamma^t f(s_t,a_t)\right],
+\qquad J_\psi(\pi)=\psi^\top\mu(\pi).
+\]
+Feature matching seeks $\mu(\pi)\approx\mu_E$. Equal features imply equal expected returns for rewards linear in the chosen features, but not necessarily equal real-world quality if important features are omitted.
+
+Maximum-margin IRL tries to find reward weights making expert behavior outperform suitable alternative policies by a margin, using constraints and possibly slack. For a fixed competitor $\pi$, the illustrative gap is
+\[
+M(\psi;\pi)=\psi^\top(\mu_E-\mu_\pi),\quad
+\nabla_\psi M=\mu_E-\mu_\pi.
+\]
+This is an intuitive update direction, not a complete maximum-margin IRL algorithm. Without norm constraints, margins can be inflated by rescaling weights. And if $\pi_\psi^*$ is the actual optimizer under the current reward, then $J_\psi(\pi_\psi^*)\ge J_\psi(\pi_E)$; the expert cannot exceed that optimal policy by a strictly positive margin.
+
+\paragraph{Numerical example.} If features are efficiency and safety,
+$\mu_E=(8,9)^\top$, $\mu_\pi=(10,4)^\top$, $\psi=(1,2)^\top$,
+then expert return is $26$, competitor return is $18$, and their gap is $8$. This satisfies a fixed-candidate margin threshold of $5$. Weight comparison depends on feature units.
+The slides note drawbacks of maximum-margin approaches: arbitrary margin, limited modeling of expert suboptimality, and awkward constrained optimization.
+
+\section{Maximum Entropy IRL}
+Instead of forcing expert decisions to be deterministically optimal, use a probabilistic trajectory model. In the simplified finite setting:
+\[
+p_\psi(\tau)=\frac{\exp(R_\psi(\tau))}{Z(\psi)},\qquad
+Z(\psi)=\sum_\tau\exp(R_\psi(\tau)).
+\]
+Reward corresponds to negative energy in an energy-based model. In stochastic environments, a full trajectory distribution also includes the dynamics or base measure.
+
+For expert demonstrations $\D_E=\{\tau_i\}_{i=1}^N$, maximum likelihood optimizes
+\[
+\mathcal L(\psi)=\frac1N\sum_i R_\psi(\tau_i)-\log Z(\psi).
+\]
+For $R_\psi(\tau)=\psi^\top F(\tau)$, where $F(\tau)=\sum_t f(s_t,a_t)$:
+\[
+\boxed{\nabla_\psi\mathcal L=\E_{\D_E}[F(\tau)]-\E_{p_\psi}[F(\tau)]}.
+\]
+Thus, when the maximum is interior and differentiable, the stationary condition gives feature expectation matching. With two trajectory rewards $2$ and $1$, the higher-reward trajectory gets probability $e^2/(e^2+e)\approx 0.731$, not $1$.
+
+\section{Guided Cost Learning and High Dimensions}
+The lecture highlights two barriers to practical MaxEnt IRL: an inner soft-policy optimization and enumeration of state-action visitation frequencies. Large continuous state and action spaces and unknown dynamics motivate sampling.
+
+If the target trajectory distribution is $p_\psi$ but samples come from policy-induced proposal $q$, a plain empirical average estimates $\E_q[F]$, not $\E_{p_\psi}[F]$. With support, importance sampling yields
+\[
+\E_{p_\psi}[F]=\E_q\left[\frac{p_\psi(\tau)}{q(\tau)}F(\tau)\right].
+\]
+A self-normalized approximation based on the complete unnormalized target trajectory density $\widetilde p_\psi$ is
+\[
+\widehat{\E}_{p_\psi}[F]=\frac{\sum_iw_iF(\tau_i)}{\sum_iw_i},
+\qquad w_i=\frac{\widetilde p_\psi(\tau_i)}{q(\tau_i)}.
+\]
+The unnormalized density includes the relevant dynamics/base measure. Strong distribution mismatch and poor support cause unstable importance weights.
+Guided Cost Learning (Finn et al., 2016) alternates policy samples, reward/cost updates with samples and demonstrations, and policy optimization to obtain better data and behavior.
+
+\section{GAIL: Adversarial Occupancy Matching}
+Generative Adversarial Imitation Learning (GAIL; Ho and Ermon, 2016) trains a discriminator to distinguish expert from agent state-action pairs, while a policy learns to fool the discriminator. Define a normalized discounted occupancy measure:
+\[
+\rho_\pi(s,a)=(1-\gamma)\sum_{t=0}^{\infty}
+\gamma^t\Pr_\pi(s_t=s,a_t=a).
+\]
+Using discriminator convention $D(s,a)=P(\mathrm{expert}\mid s,a)$, a common objective is
+\[
+\min_\pi\max_D\quad
+\E_{\rho_E}[\log D(s,a)]
++\E_{\rho_\pi}[\log(1-D(s,a))]-\lambda H(\pi).
+\]
+The policy must be optimized via RL interaction, unlike a GAN generator directly producing images. One possible training reward is $r_D(s,a)=-\log(1-D(s,a))$.
+At perfect occupancy matching, an ideal discriminator is $D^*=1/2$ on common support. It does not automatically encode a reusable task reward: likelihood of expert origin is not identical to real task utility.
+
+\section{AIRL and Transferability}
+The lecture cites Fu, Luo, and Levine on recovering robust rewards that separate task goals from dynamics. As supplemental paper-level detail (not derived in the slide deck), one AIRL parameterization is
+\[
+D_\psi(s,a,s')=\frac{\exp(f_\psi(s,a,s'))}{\exp(f_\psi(s,a,s'))+\pi(a\mid s)},
+\qquad
+f_\psi(s,a,s')=g_\psi(s,a)+\gamma h_\psi(s')-h_\psi(s).
+\]
+The potential-like shaping component can help disentangle the reward signal. Robust reward recovery and transfer require structural assumptions (particularly in state-only reward settings) and are not guaranteed for arbitrary demonstrations or environments.
+
+\section{Method Comparison}
+\begin{center}\small
+\begin{tabularx}{\textwidth}{@{}p{0.20\textwidth}X X@{}}\toprule
+Method & Main target & Important limitation\\\midrule
+BC & Expert action likelihood & Covariate shift\\
+Feature matching & Expected features & Missing features\\
+Maximum margin & Expert ranking over alternatives & Margin, constraints, expert mistakes\\
+MaxEnt IRL & Expert trajectory likelihood & Partition function and visitation estimates\\
+Guided Cost Learning & Sample-based reward learning & Proposal coverage and variance\\
+GAIL & Expert-agent occupancy similarity & Discriminator need not recover task reward\\
+AIRL & Structured adversarial reward & Transfer depends on assumptions\\\bottomrule
+\end{tabularx}
+\end{center}
+
+\section{Review Questions}
+\begin{enumerate}
+\item Compare BC and IRL when the environment dynamics change.
+\item Why can two different reward functions yield the same optimal policy?
+\item Compute the margin with $\mu_E=(8,9)$, $\mu_\pi=(10,4)$, and $\psi=(1,2)$.
+\item Why does maximizing a fixed gap without constraints not define complete max-margin IRL?
+\item Derive the MaxEnt log-likelihood gradient and explain feature matching.
+\item Why is importance sampling necessary when the sampling and target distributions differ?
+\item Why does a GAIL discriminator score of $0.95$ not guarantee high environmental reward?
+\item Explain the relationship between potential-based shaping and AIRL transfer.
+\end{enumerate}
+
+\paragraph{Sources and scope.}
+Primary course source: the supplied CS 8803 Fall 2026 PDF titled Lec 16: Learning from Data -- Intro to Inverse RL, used as study module 12. It discusses feature matching, margin methods, probabilistic decision-making, MaxEnt IRL, high-dimensional approximations, Guided Cost Learning, adversarial imitation and reward transfer. Its suggested readings include Abbeel and Ng (2004), Ziebart et al. (2008), Finn et al. (2016), Ho and Ermon (2016), and Fu, Luo and Levine (2018). Detailed GAIL/AIRL equations and numerical checks are explanatory supplements.
